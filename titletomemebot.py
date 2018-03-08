@@ -64,8 +64,9 @@ class Meme:
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
             d = ''
-            if i < len(texts)-1:
-                d = ','
+            if poem:
+                if i < len(texts)-1:
+                    d = ','
             draw.text((10, i * line_height), text.lstrip() + d, '#000', font)
         self._width, self._height = new.size
         self._meme = new
@@ -195,7 +196,7 @@ class TitleToMemeBot:
             pass
 
     def _process_feedback_message(self, message):
-        """Forward message to creator, send comfirm message to message author
+        """Forward message to creator, send comfirmation to message author
         :param message: the feedback message
         :type message: praw.models.reddit.message.Message
         """
@@ -246,20 +247,13 @@ class TitleToMemeBot:
 
 def setup_logger():
     """ - """
-    logger = logging.getLogger()
-    log_format = '%(asctime)s %(levelname)s:%(funcName)s:%(message)s'
-    formatter = logging.Formatter(log_format)
-
-    file_handler = TimedRotatingFileHandler('./log/titletomemebot.log', when='midnight', interval=1)
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    file_handler.suffix = '%Y-%m-%d'
-    logger.addHandler(file_handler)
-
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    file_handler = TimedRotatingFileHandler('./log/titletomemebot.log', when='midnight', interval=1)
+    file_handler.suffix = '%Y-%m-%d'
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s %(funcName)s/%(lineno)d: %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S',
+                        level=logging.DEBUG,
+                        handlers=[console_handler, file_handler])
 
 def main():
     """Main function"""
