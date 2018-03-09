@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
-""" - """
+"""meh"""
 
 __version__ = '0.3'
 __author__ = 'gerenook'
 
 import logging
-from datetime import datetime
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from math import ceil
@@ -23,25 +22,28 @@ import apidata
 
 
 class Meme:
-    """ - """
+    """Meme class
+
+    :param image: the image (meme)
+    :type image: PIL.Image.Image
+    """
     font_file = 'segoeui.ttf'
     font_scale_factor = 25
 
     def __init__(self, image):
-        """Initialize Meme instance
-        :param image: the image (meme)
-        :type image: PIL.Image.Image
-        """
         self._meme = image
         self._width, self._height = image.size
 
     def add_title(self, title, poem=False):
         """Add title to new whitespace on meme
+
         :param title: the title to add
+        :param poem: if true, title will be split at ','
         :type title: str
+        :type poem: bool
         """
         font = ImageFont.truetype(Meme.font_file, self._width // Meme.font_scale_factor)
-        line_height = font.getsize(title)[1]        
+        line_height = font.getsize(title)[1]
         texts = []
         if poem:
             texts = title.split(',')
@@ -73,6 +75,7 @@ class Meme:
 
     def add_author(self, author):
         """Add /u/author to top right of image
+
         :param author: the author to add (without /u/)
         :type author: str
         """
@@ -85,9 +88,11 @@ class Meme:
 
     def upload(self, imgur):
         """Upload self._meme to imgur
+
         :param imgur: the imgur api client
         :type imgur: imgurpython.client.ImgurClient
         :returns: imgur url if upload successful, else None
+        :rtype: str
         """
         path_png = 'temp.png'
         path_jpg = 'temp.jpg'
@@ -95,11 +100,12 @@ class Meme:
         self._meme.save(path_jpg)
         try:
             response = imgur.upload_from_path(path_png)
-        except (ImgurClientError, ImgurClientRateLimitError):
-            # png upload failed (probably >10MiB), trying to upload jpg
+        except (ImgurClientError, ImgurClientRateLimitError) as error:
+            logging.warning('png upload failed, trying jpg | %s', error)
             try:
                 response = imgur.upload_from_path(path_jpg)
-            except (ImgurClientError, ImgurClientRateLimitError):
+            except (ImgurClientError, ImgurClientRateLimitError) as error:
+                logging.error('jpg upload failed, returning | %s', error)
                 return None
         finally:
             remove(path_png)
@@ -108,7 +114,13 @@ class Meme:
 
 
 class TitleToMemeBot:
-    """ - """
+    """TitleToMemeBot class
+
+    :param imgur: the imgur api
+    :param reddit: the reddit api
+    :type imgur: imgurpython.client.ImgurClient
+    :type reddit: praw.reddit.Reddit
+    """
     _templates = {
         'submission': '[Image with title]({0})\n\n' \
                       '---\n\n' \
@@ -118,67 +130,71 @@ class TitleToMemeBot:
     }
 
     def __init__(self, imgur, reddit):
-        """ - """
         self._imgur = imgur
         self._reddit = reddit
 
     def _process_submission(self, submission):
         """Generate new image with added title and author, upload to imgur, reply to submission
+
         :param submission: the reddit submission object
         :type submission: praw.models.reddit.submission.Submission
         """
-        # dtprint('Found new submission ({0}), downloading image'.format(submission.id))
-        response = requests.get(submission.url)
+        title = submission.title
+        url = submission.url
+        subreddit = submission.subreddit.display_name
+        logging.info('Found new submission id:%s title:%s subreddit:%s', submission.id, title, subreddit)
+        logging.debug('Trying to download image from %s', url)
         try:
+            response = requests.get(url)
             img = Image.open(BytesIO(response.content))
         except OSError as error:
-            # dtprint(error)
-            response = requests.get(submission.url + '.jpg')
+            logging.warning('Converting to image failed, trying with <url>.jpg | %s', error)
             try:
+                response = requests.get(url + '.jpg')
                 img = Image.open(BytesIO(response.content))
-            except OSError as error1:
-                # dtprint(error1)
+            except OSError as error:
+                logging.error('Converting to image failed, skipping submission | %s', error)
                 return
-        title = submission.title
         boot = False
-        if submission.subreddit.display_name == 'boottoobig':
+        if subreddit == 'boottoobig':
             boot = True
         if boot:
             triggers = [',', '.', 'roses']
             if not any(t in title.lower() for t in triggers):
-                # dtprint('Title is probably not part of rhyme, returning')
+                logging.info('Title is probably not part of rhyme, skipping submission')
                 return
         meme = Meme(img)
-        # dtprint('Adding title and author to image')
         meme.add_title(title, boot)
         meme.add_author(submission.author.name)
-        # dtprint('Uploading image')
+        logging.debug('Trying to upload image')
         for _ in range(3):
             url = meme.upload(self._imgur)
             if url:
                 break
-            # dtprint('Upload failed, retrying')
+            logging.warning('Upload failed, retrying')
         if not url:
-            # dtprint('Can\'t upload image, returning')
+            logging.error('Cannot upload image, skipping submission')
             return
-        # dtprint('Creating reply')
+        logging.debug('Creating reply')
         reply = TitleToMemeBot._templates['submission'].format(url, '{0}')
         try:
             comment = submission.reply(reply)
         except Exception as error:
-            # dtprint(error)
+            logging.error('Cannot reply, skipping submission')
             return
-        # dtprint('Editing comment with remove link')
+        logging.debug('Editing comment with remove link')
         comment.edit(reply.format(comment.id))
-        # dtprint('Done :)')
+        logging.info('Successfully processed submission')
 
     def _process_remove_message(self, message):
         """Remove comment referenced in message body
+
         :param message: the remove message
         :type message: praw.models.reddit.message.Message
         """
-        # dtprint('Found remove message, trying to remove')
         comment_id = message.body
+        logging.info('Found new remove message id:%s', comment_id)
+        logging.debug('Trying to remove comment')
         try:
             comment = self._reddit.comment(comment_id)
             submission_author = comment.submission.author.name
@@ -186,38 +202,38 @@ class TitleToMemeBot:
             if (message_author == submission_author or
                     message_author == __author__):
                 comment.delete()
-                # dtprint('Done :)')
+                logging.info('Successfully deleted comment')
             else:
-                # dtprint('Authors don\'t match, not removing')
-                pass
+                logging.info('Authors don\'t match, comment not removed')
             message.mark_read()
         except Exception as error:
-            # dtprint(error)
-            pass
+            logging.error('Cannot remove comment | %s', error)
 
     def _process_feedback_message(self, message):
-        """Forward message to creator, send comfirmation to message author
+        """Forward message to creator, send confirmation to message author
+
         :param message: the feedback message
         :type message: praw.models.reddit.message.Message
         """
-        # dtprint('Found feedback message, forwarding to author')
-        subject = 'TitleToMemeBot feedback from ' + message.author.name
+        message_author = message.author.name
+        logging.info('Found feedback message from %s', message_author)
+        subject = 'TitleToMemeBot feedback from ' + message_author
         body = message.body
         self._reddit.redditor(__author__).message(subject, body)
         message.mark_read()
-
         subject = 'TitleToMemeBot feedback'
         body = TitleToMemeBot._templates['feedback']
         message.author.message(subject, body)
-        # dtprint('Done :)')
+        logging.info('Forwarded message to author')
 
     def _check_messages(self):
         """Check inbox for remove and feedback messages
+
         :param reddit: the reddit object
         :type reddit: praw.reddit.Reddit
         """
         inbox = self._reddit.inbox
-        # dtprint('Checking unread messages')
+        logging.debug('Checking unread messages')
         for message in inbox.unread(limit=None):
             if message.subject == 'remove':
                 self._process_remove_message(message)
@@ -226,6 +242,7 @@ class TitleToMemeBot:
 
     def run(self, test=False):
         """Start the bot
+
         :param test: if true, subreddit 'testingground4bots' is included
         :type test: bool
         """
@@ -233,6 +250,7 @@ class TitleToMemeBot:
         if test:
             sub += '+testingground4bots'
         subreddit = self._reddit.subreddit(sub)
+        logging.debug('Waiting for new submission...')
         while True:
             try:
                 for i, submission in enumerate(subreddit.stream.submissions()):
@@ -241,27 +259,35 @@ class TitleToMemeBot:
                         continue
                     self._process_submission(submission)
                     self._check_messages()
+                    logging.debug('Waiting for new submission...')
             except requests.exceptions.ReadTimeout:
+                logging.error('Subreddit stream timed out, restarting')
                 continue
 
 
-def setup_logger():
-    """ - """
+def _setup_logging(level=logging.DEBUG):
+    """Setup the root logger
+
+    logs to stdout and to daily log files in ./log/
+    """
     console_handler = logging.StreamHandler()
     file_handler = TimedRotatingFileHandler('./log/titletomemebot.log', when='midnight', interval=1)
     file_handler.suffix = '%Y-%m-%d'
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s %(funcName)s/%(lineno)d: %(message)s',
+    logging.getLogger('requests').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('prawcore').setLevel(logging.WARNING)
+    logging.basicConfig(format='%(asctime)s %(levelname)s L%(lineno)d in %(funcName)s: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
-                        level=logging.DEBUG,
+                        level=level,
                         handlers=[console_handler, file_handler])
 
 def main():
     """Main function"""
-    setup_logger()
+    _setup_logging()
     imgur = ImgurClient(**apidata.imgur)
     reddit = praw.Reddit(**apidata.reddit)
     bot = TitleToMemeBot(imgur, reddit)
-    bot.run()
+    bot.run(test=True)
 
 if __name__ == '__main__':
     main()
