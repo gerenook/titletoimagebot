@@ -276,6 +276,7 @@ def _setup_logging(level=logging.DEBUG):
     logging.getLogger('requests').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('prawcore').setLevel(logging.WARNING)
+    logging.getLogger('PIL.Image').setLevel(logging.WARNING)
     logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s L%(lineno)d: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         level=level,
