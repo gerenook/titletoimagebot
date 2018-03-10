@@ -6,6 +6,7 @@ __version__ = '0.3'
 __author__ = 'gerenook'
 
 import logging
+import textwrap
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from math import ceil
@@ -51,15 +52,7 @@ class Meme:
                 texts = texts[:-1]
                 texts[-1] += ','
         else:
-            limit = 45
-            lines = ceil(len(title) / limit)
-            if lines > 1:
-                words = title.split(' ')
-                x = ceil(len(words) / lines)
-                for l in range(lines):
-                    texts.append(' '.join(words[l*x:(l+1)*x]))
-            else:
-                texts.append(title)
+            texts = textwrap.wrap(title, 45)
         whitespace_height = (line_height * len(texts)) + 10
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._meme, (0, whitespace_height))
@@ -205,9 +198,10 @@ class TitleToMemeBot:
                 logging.info('Successfully deleted comment')
             else:
                 logging.info('Authors don\'t match, comment not removed')
-            message.mark_read()
         except Exception as error:
             logging.error('Cannot remove comment | %s', error)
+        finally:
+            message.mark_read()
 
     def _process_feedback_message(self, message):
         """Forward message to creator, send confirmation to message author
@@ -273,10 +267,9 @@ def _setup_logging(level=logging.DEBUG):
     console_handler = logging.StreamHandler()
     file_handler = TimedRotatingFileHandler('./log/titletomemebot.log', when='midnight', interval=1)
     file_handler.suffix = '%Y-%m-%d'
-    logging.getLogger('requests').setLevel(logging.WARNING)
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('prawcore').setLevel(logging.WARNING)
-    logging.getLogger('PIL.Image').setLevel(logging.WARNING)
+    module_loggers = ['requests', 'urllib3', 'prawcore', 'PIL.Image', 'PIL.PngImagePlugin']
+    for logger in module_loggers:
+        logging.getLogger(logger).setLevel(logging.WARNING)
     logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s L%(lineno)d: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         level=level,
