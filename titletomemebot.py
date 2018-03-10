@@ -2,6 +2,9 @@
 
 """meh"""
 
+#TODO add subreddit to image (maybe)
+#TODO more subs!
+
 __version__ = '0.3'
 __author__ = 'gerenook'
 
@@ -118,8 +121,7 @@ class TitleToMemeBot:
         'submission': '[Image with title]({0})\n\n' \
                       '---\n\n' \
                       '^^Did ^^I ^^fuck ^^up? ^^[remove](https://reddit.com/message/compose/?to=TitleToMemeBot&subject=remove&message={1}) ^^| ' \
-                      '^^[feedback](https://reddit.com/message/compose/?to=TitleToMemeBot&subject=feedback)',
-        'feedback': 'Thanks for your feedback, I forwarded it to my creator!'
+                      '^^[feedback](https://reddit.com/message/compose/?to=TitleToMemeBot&subject=feedback)'
     }
 
     def __init__(self, imgur, reddit):
@@ -215,9 +217,6 @@ class TitleToMemeBot:
         body = message.body
         self._reddit.redditor(__author__).message(subject, body)
         message.mark_read()
-        subject = 'TitleToMemeBot feedback'
-        body = TitleToMemeBot._templates['feedback']
-        message.author.message(subject, body)
         logging.info('Forwarded message to author')
 
     def _check_messages(self):
