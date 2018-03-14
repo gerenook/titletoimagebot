@@ -21,6 +21,7 @@ from imgurpython import ImgurClient
 from imgurpython.helpers.error import (ImgurClientError,
                                        ImgurClientRateLimitError)
 from PIL import Image, ImageDraw, ImageFont
+from prawcore.exceptions import ResponseException
 
 import apidata
 
@@ -32,7 +33,7 @@ class Meme:
     :type image: PIL.Image.Image
     """
     font_file = 'segoeui.ttf'
-    font_scale_factor = 25
+    font_scale_factor = 20
 
     def __init__(self, image):
         self._meme = image
@@ -239,7 +240,7 @@ class TitleToMemeBot:
         :param test: if true, subreddit 'testingground4bots' is included
         :type test: bool
         """
-        sub = 'boottoobig+fakehistoryporn'
+        sub = 'boottoobig'
         if test:
             sub += '+testingground4bots'
         subreddit = self._reddit.subreddit(sub)
@@ -253,7 +254,7 @@ class TitleToMemeBot:
                     self._process_submission(submission)
                     self._check_messages()
                     logging.debug('Waiting for new submission...')
-            except requests.exceptions.ReadTimeout:
+            except (requests.exceptions.ReadTimeout, ResponseException):
                 logging.error('Subreddit stream timed out, restarting')
                 continue
 
