@@ -254,7 +254,7 @@ class TitleToMemeBot:
                     self._process_submission(submission)
                     self._check_messages()
                     logging.debug('Waiting for new submission...')
-            except (requests.exceptions.ReadTimeout, ResponseException):
+            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError, ResponseException):
                 logging.error('Subreddit stream timed out, restarting')
                 continue
 
