@@ -2,9 +2,6 @@
 
 """meh"""
 
-#TODO add subreddit to image (maybe)
-#TODO more subs!
-
 __version__ = '0.3'
 __author__ = 'gerenook'
 
@@ -139,6 +136,9 @@ class TitleToMemeBot:
         url = submission.url
         subreddit = submission.subreddit.display_name
         logging.info('Found new submission id:%s title:%s subreddit:%s', submission.id, title, subreddit)
+        if url.endswith('.gif'):
+            logging.info('Image is animated gif, skipping submission')
+            return
         logging.debug('Trying to download image from %s', url)
         try:
             response = requests.get(url)
