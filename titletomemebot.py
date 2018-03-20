@@ -7,6 +7,8 @@ __author__ = 'gerenook'
 
 import logging
 import textwrap
+import threading
+import time
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from math import ceil
@@ -107,24 +109,20 @@ class Meme:
         return response['link']
 
 
-class TitleToMemeBot:
-    """TitleToMemeBot class
-
-    :param imgur: the imgur api
-    :param reddit: the reddit api
-    :type imgur: imgurpython.client.ImgurClient
-    :type reddit: praw.reddit.Reddit
+class SubmissionThread(threading.Thread):
+    """ -
     """
-    _templates = {
-        'submission': '[Image with title]({0})\n\n' \
-                      '---\n\n' \
-                      '^^Did ^^I ^^fuck ^^up? ^^[remove](https://reddit.com/message/compose/?to=TitleToMemeBot&subject=remove&message={1}) ^^| ' \
-                      '^^[feedback](https://reddit.com/message/compose/?to=TitleToMemeBot&subject=feedback)'
-    }
 
-    def __init__(self, imgur, reddit):
-        self._imgur = imgur
-        self._reddit = reddit
+    def __init__(self):
+        threading.Thread.__init__(self, name=SubmissionThread.__name__)
+        self._imgur = ImgurClient(**apidata.imgur)
+        self._reddit = praw.Reddit(**apidata.reddit)
+        self._template = '[Image with title]({0})\n\n' \
+                         '---\n\n' \
+                         '^^Did ^^I ^^fuck ^^up? ^^[remove](https://reddit.com/message/compose/' \
+                         '?to=TitleToMemeBot&subject=remove&message={1}) ^^| ' \
+                         '^^[feedback](https://reddit.com/message/compose/' \
+                         '?to=TitleToMemeBot&subject=feedback)'
 
     def _process_submission(self, submission):
         """Generate new image with added title and author, upload to imgur, reply to submission
@@ -135,7 +133,8 @@ class TitleToMemeBot:
         title = submission.title
         url = submission.url
         subreddit = submission.subreddit.display_name
-        logging.info('Found new submission id:%s title:%s subreddit:%s', submission.id, title, subreddit)
+        logging.info('Found new submission id:%s title:%s subreddit:%s',
+                     submission.id, title, subreddit)
         if url.endswith('.gif'):
             logging.info('Image is animated gif, skipping submission')
             return
@@ -172,7 +171,7 @@ class TitleToMemeBot:
             logging.error('Cannot upload image, skipping submission')
             return
         logging.debug('Creating reply')
-        reply = TitleToMemeBot._templates['submission'].format(url, '{0}')
+        reply = self._template.format(url, '{0}')
         try:
             comment = submission.reply(reply)
         except Exception as error:
@@ -181,6 +180,33 @@ class TitleToMemeBot:
         logging.debug('Editing comment with remove link')
         comment.edit(reply.format(comment.id))
         logging.info('Successfully processed submission')
+
+    def run(self):
+        sub = 'boottoobig+testingground4bots'
+        subreddit = self._reddit.subreddit(sub)
+        logging.debug('Waiting for new submission...')
+        while True:
+            try:
+                for i, submission in enumerate(subreddit.stream.submissions()):
+                    # stream includes past 100 submissions, skip those
+                    if i < 100:
+                        continue
+                    self._process_submission(submission)
+                    logging.debug('Waiting for new submission...')
+            except (requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectionError,
+                    ResponseException):
+                logging.error('Subreddit stream timed out, restarting')
+                continue
+
+
+class MessageThread(threading.Thread):
+    """ -
+    """
+
+    def __init__(self):
+        threading.Thread.__init__(self, name=MessageThread.__name__)
+        self._reddit = praw.Reddit(**apidata.reddit)
 
     def _process_remove_message(self, message):
         """Remove comment referenced in message body
@@ -220,42 +246,29 @@ class TitleToMemeBot:
         message.mark_read()
         logging.info('Forwarded message to author')
 
-    def _check_messages(self):
-        """Check inbox for remove and feedback messages
-
-        :param reddit: the reddit object
-        :type reddit: praw.reddit.Reddit
-        """
-        inbox = self._reddit.inbox
-        logging.debug('Checking unread messages')
-        for message in inbox.unread(limit=None):
-            if message.subject == 'remove':
-                self._process_remove_message(message)
-            elif message.subject == 'feedback':
-                self._process_feedback_message(message)
-
-    def run(self, test=False):
-        """Start the bot
-
-        :param test: if true, subreddit 'testingground4bots' is included
-        :type test: bool
-        """
-        sub = 'boottoobig'
-        if test:
-            sub += '+testingground4bots'
-        subreddit = self._reddit.subreddit(sub)
-        logging.debug('Waiting for new submission...')
+    def run(self):
+        logging.debug('Waiting for new message...')
         while True:
             try:
-                for i, submission in enumerate(subreddit.stream.submissions()):
-                    # stream includes past 100 submissions, skip those
-                    if i < 100:
-                        continue
-                    self._process_submission(submission)
-                    self._check_messages()
-                    logging.debug('Waiting for new submission...')
-            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError, ResponseException):
-                logging.error('Subreddit stream timed out, restarting')
+                for message in self._reddit.inbox.stream():
+                    # TODO check if message is unread (how???)
+                    subject = message.subject.lower()
+                    body = message.body.lower()
+                    if subject == 'remove':
+                        self._process_remove_message(message)
+                    elif subject == 'feedback':
+                        self._process_feedback_message(message)
+                    elif 'good bot' in body and len(body) < 12:
+                        logging.debug('Good bot message found, marking as read')
+                        message.mark_read()
+                    elif 'bad bot' in body and len(body) < 12:
+                        logging.debug('Bad bot message found, marking as read')
+                        message.mark_read()
+                    logging.debug('Waiting for new message...')
+            except (requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectionError,
+                    ResponseException):
+                logging.error('Inbox stream timed out, restarting')
                 continue
 
 
@@ -269,8 +282,8 @@ def _setup_logging(level=logging.DEBUG):
     file_handler.suffix = '%Y-%m-%d'
     module_loggers = ['requests', 'urllib3', 'prawcore', 'PIL.Image', 'PIL.PngImagePlugin']
     for logger in module_loggers:
-        logging.getLogger(logger).setLevel(logging.WARNING)
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s L%(lineno)d: %(message)s',
+        logging.getLogger(logger).setLevel(logging.ERROR)
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(threadName)s L%(lineno)d: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         level=level,
                         handlers=[console_handler, file_handler])
@@ -278,10 +291,12 @@ def _setup_logging(level=logging.DEBUG):
 def main():
     """Main function"""
     _setup_logging()
-    imgur = ImgurClient(**apidata.imgur)
-    reddit = praw.Reddit(**apidata.reddit)
-    bot = TitleToMemeBot(imgur, reddit)
-    bot.run(test=True)
+    threads = [SubmissionThread(), MessageThread()]
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+    while True:
+        time.sleep(1)
 
 if __name__ == '__main__':
     main()
