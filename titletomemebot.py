@@ -118,7 +118,7 @@ class SubmissionThread(threading.Thread):
     """
 
     def __init__(self, sub='boottoobig'):
-        threading.Thread.__init__(self)
+        threading.Thread.__init__(self, name=SubmissionThread.__name__)
         self._imgur = ImgurClient(**apidata.imgur)
         self._reddit = praw.Reddit(**apidata.reddit)
         self._sub = sub
