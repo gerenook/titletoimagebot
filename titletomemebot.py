@@ -6,9 +6,11 @@ __version__ = '0.4'
 __author__ = 'gerenook'
 
 import logging
+import sys
 import textwrap
 import threading
 import time
+import traceback
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from os import remove
@@ -141,7 +143,7 @@ class SubmissionThread(threading.Thread):
         subreddit = submission.subreddit.display_name
         logging.info('Found new submission id:%s title:%s subreddit:%s',
                      submission.id, title, subreddit)
-        if url.endswith('.gif'):
+        if url.endswith('.gif') or url.endswith('.gifv'):
             logging.info('Image is animated gif, skipping submission')
             return
         logging.debug('Trying to download image from %s', url)
@@ -294,9 +296,18 @@ def _setup_logging(level):
                         level=level,
                         handlers=[console_handler, file_handler])
 
+def _handle_exception(exc_type, exc_value, exc_traceback):
+    """Log unhandled exceptions"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    text = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logging.critical('Unhandled exception:\n%s', text)
+
 def main():
     """Main function"""
     _setup_logging(logging.INFO)
+    sys.excepthook = _handle_exception
     threads = [SubmissionThread(), MessageThread()]
     for thread in threads:
         thread.daemon = True
