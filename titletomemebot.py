@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.3'
+__version__ = '0.4'
 __author__ = 'gerenook'
 
 import logging
@@ -11,7 +11,6 @@ import threading
 import time
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
-from math import ceil
 from os import remove
 
 import praw
@@ -38,22 +37,26 @@ class Meme:
         self._meme = image
         self._width, self._height = image.size
 
-    def add_title(self, title, poem=False):
+    def add_title(self, title):
         """Add title to new whitespace on meme
 
         :param title: the title to add
-        :param poem: if true, title will be split at ','
         :type title: str
-        :type poem: bool
         """
         font = ImageFont.truetype(Meme.font_file, self._width // Meme.font_scale_factor)
         line_height = font.getsize(title)[1]
-        texts = []
-        if poem:
-            texts = title.split(',')
-            if not texts[-1]:
-                texts = texts[:-1]
-                texts[-1] += ','
+        # Find the delimiter
+        delimiter = None
+        for character in title:
+            if character in [',', ';', '.']:
+                delimiter = character
+                break
+        # Split title at delimiter and add it back
+        # Example:
+        # title = 'Roses are red, violets are blue,'
+        # texts = ['Roses are red,', 'violets are blue,']
+        if delimiter:
+            texts = [s.strip() + delimiter for s in title.split(delimiter) if s]
         else:
             texts = textwrap.wrap(title, 45)
         whitespace_height = (line_height * len(texts)) + 10
@@ -61,11 +64,7 @@ class Meme:
         new.paste(self._meme, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            d = ''
-            if poem:
-                if i < len(texts)-1:
-                    d = ','
-            draw.text((10, i * line_height), text.lstrip() + d, '#000', font)
+            draw.text((10, i * line_height), text, '#000', font)
         self._width, self._height = new.size
         self._meme = new
 
@@ -110,19 +109,26 @@ class Meme:
 
 
 class SubmissionThread(threading.Thread):
-    """ -
+    """ SubmissionThread class
+
+    Waits for new submissions using subreddit stream
+
+    :param sub: the subreddit(s), default is 'boottoobig'
+    :type sub: str
     """
 
-    def __init__(self):
-        threading.Thread.__init__(self, name=SubmissionThread.__name__)
+    def __init__(self, sub='boottoobig'):
+        threading.Thread.__init__(self)
         self._imgur = ImgurClient(**apidata.imgur)
         self._reddit = praw.Reddit(**apidata.reddit)
+        self._sub = sub
         self._template = '[Image with title]({0})\n\n' \
                          '---\n\n' \
-                         '^^Did ^^I ^^fuck ^^up? ^^[remove](https://reddit.com/message/compose/' \
-                         '?to=TitleToMemeBot&subject=remove&message={1}) ^^| ' \
+                         '^^[remove](https://reddit.com/message/compose/' \
+                         '?to=TitleToMemeBot&subject=remove&message={1}) ^^\\(for ^^OP\\) ^^| ' \
                          '^^[feedback](https://reddit.com/message/compose/' \
-                         '?to=TitleToMemeBot&subject=feedback)'
+                         '?to=TitleToMemeBot&subject=feedback) ^^| ' \
+                         '^^[source](https://github.com/gerenook/titletomemebot)'
 
     def _process_submission(self, submission):
         """Generate new image with added title and author, upload to imgur, reply to submission
@@ -150,16 +156,13 @@ class SubmissionThread(threading.Thread):
             except OSError as error:
                 logging.error('Converting to image failed, skipping submission | %s', error)
                 return
-        boot = False
         if subreddit == 'boottoobig':
-            boot = True
-        if boot:
-            triggers = [',', '.', 'roses']
+            triggers = [',', '.', ';', 'roses']
             if not any(t in title.lower() for t in triggers):
                 logging.info('Title is probably not part of rhyme, skipping submission')
                 return
         meme = Meme(img)
-        meme.add_title(title, boot)
+        meme.add_title(title)
         meme.add_author(submission.author.name)
         logging.debug('Trying to upload image')
         for _ in range(3):
@@ -182,8 +185,7 @@ class SubmissionThread(threading.Thread):
         logging.info('Successfully processed submission')
 
     def run(self):
-        sub = 'boottoobig+testingground4bots'
-        subreddit = self._reddit.subreddit(sub)
+        subreddit = self._reddit.subreddit(self._sub)
         logging.debug('Waiting for new submission...')
         while True:
             try:
@@ -201,7 +203,9 @@ class SubmissionThread(threading.Thread):
 
 
 class MessageThread(threading.Thread):
-    """ -
+    """ MessageThread class
+
+    Waits for new messages using inbox stream
     """
 
     def __init__(self):
@@ -233,7 +237,7 @@ class MessageThread(threading.Thread):
             message.mark_read()
 
     def _process_feedback_message(self, message):
-        """Forward message to creator, send confirmation to message author
+        """Forward message to creator
 
         :param message: the feedback message
         :type message: praw.models.reddit.message.Message
@@ -251,7 +255,6 @@ class MessageThread(threading.Thread):
         while True:
             try:
                 for message in self._reddit.inbox.stream():
-                    # TODO check if message is unread (how???)
                     subject = message.subject.lower()
                     body = message.body.lower()
                     if subject == 'remove':
@@ -259,10 +262,10 @@ class MessageThread(threading.Thread):
                     elif subject == 'feedback':
                         self._process_feedback_message(message)
                     elif 'good bot' in body and len(body) < 12:
-                        logging.debug('Good bot message found, marking as read')
+                        logging.debug('Good bot message or comment reply found, marking as read')
                         message.mark_read()
                     elif 'bad bot' in body and len(body) < 12:
-                        logging.debug('Bad bot message found, marking as read')
+                        logging.debug('Bad bot message or comment reply found, marking as read')
                         message.mark_read()
                     logging.debug('Waiting for new message...')
             except (requests.exceptions.ReadTimeout,
@@ -272,10 +275,13 @@ class MessageThread(threading.Thread):
                 continue
 
 
-def _setup_logging(level=logging.DEBUG):
+def _setup_logging(level):
     """Setup the root logger
 
     logs to stdout and to daily log files in ./log/
+
+    :param level: the logging level (e.g. logging.WARNING)
+    :type level: int
     """
     console_handler = logging.StreamHandler()
     file_handler = TimedRotatingFileHandler('./log/titletomemebot.log', when='midnight', interval=1)
@@ -290,7 +296,7 @@ def _setup_logging(level=logging.DEBUG):
 
 def main():
     """Main function"""
-    _setup_logging()
+    _setup_logging(logging.INFO)
     threads = [SubmissionThread(), MessageThread()]
     for thread in threads:
         thread.daemon = True
