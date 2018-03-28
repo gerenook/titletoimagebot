@@ -2,13 +2,14 @@
 
 """meh"""
 
-__version__ = '0.4'
+__version__ = '0.5'
 __author__ = 'gerenook'
 
+import argparse
 import logging
+import sqlite3
 import sys
 import textwrap
-import threading
 import time
 import traceback
 from io import BytesIO
@@ -39,6 +40,35 @@ class Meme:
         self._meme = image
         self._width, self._height = image.size
 
+    def _split_title(self, title):
+        """Split title
+
+        Split title without removing delimiter (str.split() can't do this).
+        If no delimiter was found, wrap text at 45 characters
+
+        :param title: the title to split
+        :type title: str
+        :returns: split title
+        :rtype: list
+        """
+        all_delimiters = [',', ';', '.']
+        delimiter = None
+        new = ['']
+        i = 0
+        for character in title:
+            if character == ' ' and not new[i]:
+                continue
+            new[i] += character
+            if not delimiter:
+                if character in all_delimiters:
+                    delimiter = character
+            if character == delimiter:
+                new.append('')
+                i += 1
+        if delimiter:
+            return new
+        return textwrap.wrap(title, 45)
+
     def add_title(self, title):
         """Add title to new whitespace on meme
 
@@ -47,20 +77,7 @@ class Meme:
         """
         font = ImageFont.truetype(Meme.font_file, self._width // Meme.font_scale_factor)
         line_height = font.getsize(title)[1]
-        # Find the delimiter
-        delimiter = None
-        for character in title:
-            if character in [',', ';', '.']:
-                delimiter = character
-                break
-        # Split title at delimiter and add it back
-        # Example:
-        # title = 'Roses are red, violets are blue,'
-        # texts = ['Roses are red,', 'violets are blue,']
-        if delimiter:
-            texts = [s.strip() + delimiter for s in title.split(delimiter) if s]
-        else:
-            texts = textwrap.wrap(title, 45)
+        texts = self._split_title(title)
         whitespace_height = (line_height * len(texts)) + 10
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._meme, (0, whitespace_height))
@@ -110,27 +127,29 @@ class Meme:
         return response['link']
 
 
-class SubmissionThread(threading.Thread):
-    """ SubmissionThread class
+class TitleToImageBot:
+    """TitleToImageBot class
 
-    Waits for new submissions using subreddit stream
-
-    :param sub: the subreddit(s), default is 'boottoobig'
-    :type sub: str
+    :param subreddit: the subreddit(s) to process, can be concatenated with +
+    :type subreddit: str
     """
-
-    def __init__(self, sub='boottoobig'):
-        threading.Thread.__init__(self, name=SubmissionThread.__name__)
-        self._imgur = ImgurClient(**apidata.imgur)
+    def __init__(self, subreddit):
+        if subreddit != 'boottoobig':
+            raise NotImplementedError
+        self._sql_connection = sqlite3.connect('database.db')
+        self._sql = self._sql_connection.cursor()
         self._reddit = praw.Reddit(**apidata.reddit)
-        self._sub = sub
-        self._template = '[Image with title]({0})\n\n' \
+        self._subreddit = self._reddit.subreddit(subreddit)
+        self._imgur = ImgurClient(**apidata.imgur)
+        self._template = '[Image with title]({image_url})\n\n' \
                          '---\n\n' \
                          '^^[remove](https://reddit.com/message/compose/' \
-                         '?to=TitleToMemeBot&subject=remove&message={1}) ^^\\(for ^^OP\\) ^^| ' \
+                         '?to=TitleToMemeBot&subject=remove&message={comment_id}) ' \
+                         '^^\\(for ^^OP\\) ^^| ' \
                          '^^[feedback](https://reddit.com/message/compose/' \
                          '?to=TitleToMemeBot&subject=feedback) ^^| ' \
-                         '^^[source](https://github.com/gerenook/titletomemebot)'
+                         '^^[source](https://github.com/gerenook/titletomemebot/' \
+                         'blob/master/titletomemebot.py)'
 
     def _process_submission(self, submission):
         """Generate new image with added title and author, upload to imgur, reply to submission
@@ -138,11 +157,25 @@ class SubmissionThread(threading.Thread):
         :param submission: the reddit submission object
         :type submission: praw.models.reddit.submission.Submission
         """
+        # check db if submission was already processed
+        author = submission.author.name
         title = submission.title
         url = submission.url
-        subreddit = submission.subreddit.display_name
-        logging.info('Found new submission id:%s title:%s subreddit:%s',
-                     submission.id, title, subreddit)
+        params1 = (submission.id,)
+        params2 = (submission.id, author, title, url)
+        self._sql.execute('SELECT EXISTS(SELECT 1 FROM submissions WHERE id=? LIMIT 1)', params1)
+        if self._sql.fetchone()[0]:
+            logging.debug('Submission %s found in database, returning', params1[0])
+            return
+        logging.info('Found new submission id:%s title:%s', submission.id, title)
+        logging.debug('Adding submission to database')
+        self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES (?, ?, ?, ?)',
+                          params2)
+        self._sql_connection.commit()
+        triggers = [',', '.', ';', 'roses']
+        if not any(t in title.lower() for t in triggers):
+            logging.info('Title is probably not part of rhyme, skipping submission')
+            return
         if url.endswith('.gif') or url.endswith('.gifv'):
             logging.info('Image is animated gif, skipping submission')
             return
@@ -158,61 +191,29 @@ class SubmissionThread(threading.Thread):
             except OSError as error:
                 logging.error('Converting to image failed, skipping submission | %s', error)
                 return
-        if subreddit == 'boottoobig':
-            triggers = [',', '.', ';', 'roses']
-            if not any(t in title.lower() for t in triggers):
-                logging.info('Title is probably not part of rhyme, skipping submission')
-                return
         meme = Meme(img)
+        logging.debug('Adding title and author')
         meme.add_title(title)
         meme.add_author(submission.author.name)
-        logging.debug('Trying to upload image')
+        logging.debug('Trying to upload new image')
         for _ in range(3):
             url = meme.upload(self._imgur)
             if url:
                 break
             logging.warning('Upload failed, retrying')
         if not url:
-            logging.error('Cannot upload image, skipping submission')
+            logging.error('Cannot upload new image, skipping submission')
             return
         logging.debug('Creating reply')
-        reply = self._template.format(url, '{0}')
+        reply = self._template.format(image_url=url, comment_id='{comment_id}')
         try:
             comment = submission.reply(reply)
         except Exception as error:
             logging.error('Cannot reply, skipping submission')
             return
         logging.debug('Editing comment with remove link')
-        comment.edit(reply.format(comment.id))
+        comment.edit(reply.format(comment_id=comment.id))
         logging.info('Successfully processed submission')
-
-    def run(self):
-        subreddit = self._reddit.subreddit(self._sub)
-        logging.debug('Waiting for new submission...')
-        while True:
-            try:
-                for i, submission in enumerate(subreddit.stream.submissions()):
-                    # stream includes past 100 submissions, skip those
-                    if i < 100:
-                        continue
-                    self._process_submission(submission)
-                    logging.debug('Waiting for new submission...')
-            except (requests.exceptions.ReadTimeout,
-                    requests.exceptions.ConnectionError,
-                    ResponseException):
-                logging.error('Subreddit stream timed out, restarting')
-                continue
-
-
-class MessageThread(threading.Thread):
-    """ MessageThread class
-
-    Waits for new messages using inbox stream
-    """
-
-    def __init__(self):
-        threading.Thread.__init__(self, name=MessageThread.__name__)
-        self._reddit = praw.Reddit(**apidata.reddit)
 
     def _process_remove_message(self, message):
         """Remove comment referenced in message body
@@ -245,36 +246,63 @@ class MessageThread(threading.Thread):
         :type message: praw.models.reddit.message.Message
         """
         message_author = message.author.name
-        logging.info('Found feedback message from %s', message_author)
+        logging.info('Found new feedback message from %s', message_author)
         subject = 'TitleToMemeBot feedback from ' + message_author
         body = message.body
         self._reddit.redditor(__author__).message(subject, body)
         message.mark_read()
         logging.info('Forwarded message to author')
 
-    def run(self):
-        logging.debug('Waiting for new message...')
-        while True:
-            try:
-                for message in self._reddit.inbox.stream():
-                    subject = message.subject.lower()
-                    body = message.body.lower()
-                    if subject == 'remove':
-                        self._process_remove_message(message)
-                    elif subject == 'feedback':
-                        self._process_feedback_message(message)
-                    elif 'good bot' in body and len(body) < 12:
-                        logging.debug('Good bot message or comment reply found, marking as read')
-                        message.mark_read()
-                    elif 'bad bot' in body and len(body) < 12:
-                        logging.debug('Bad bot message or comment reply found, marking as read')
-                        message.mark_read()
-                    logging.debug('Waiting for new message...')
-            except (requests.exceptions.ReadTimeout,
-                    requests.exceptions.ConnectionError,
-                    ResponseException):
-                logging.error('Inbox stream timed out, restarting')
-                continue
+    def _process_message(self, message):
+        """Process given message (remove, feedback, mark good/bad bot as read)
+
+        :param message: the inbox message
+        :type message: praw.models.reddit.message.Message
+        """
+        # check db if submission was already processed
+        author = message.author.name
+        subject = message.subject.lower()
+        body = message.body.lower()
+        params1 = (message.id,)
+        params2 = (message.id, author, subject, body)
+        self._sql.execute('SELECT EXISTS(SELECT 1 FROM messages WHERE id=? LIMIT 1)', params1)
+        if self._sql.fetchone()[0]:
+            logging.debug('Message %s found in database, returning', params1[0])
+            return
+        logging.debug('New message: %s | %s', subject, body)
+        logging.debug('Adding message to database')
+        self._sql.execute('INSERT INTO messages (id, author, subject, body) VALUES (?, ?, ?, ?)',
+                          params2)
+        self._sql_connection.commit()
+        # check if message was sent, instead of received
+        if author == self._reddit.user.me().name:
+            logging.debug('Message was sent, returning')
+            return
+        if subject == 'remove':
+            self._process_remove_message(message)
+        elif subject == 'feedback':
+            self._process_feedback_message(message)
+        elif 'good bot' in body and len(body) < 12:
+            logging.info('Good bot message or comment reply found, marking as read')
+            message.mark_read()
+        elif 'bad bot' in body and len(body) < 12:
+            logging.info('Bad bot message or comment reply found, marking as read')
+            message.mark_read()
+
+    def run(self, limit):
+        """Run the bot
+
+        Process new submissions and messages
+
+        :param limit: amount of submission/messages to process
+        :type limit: int
+        """
+        logging.debug('Processing last %s submissions...', limit)
+        for submission in self._subreddit.new(limit=limit):
+            self._process_submission(submission)
+        logging.debug('Processing last %s messages and/or comment replies...', limit)
+        for message in self._reddit.inbox.all(limit=limit):
+            self._process_message(message)
 
 
 def _setup_logging(level):
@@ -291,13 +319,14 @@ def _setup_logging(level):
     module_loggers = ['requests', 'urllib3', 'prawcore', 'PIL.Image', 'PIL.PngImagePlugin']
     for logger in module_loggers:
         logging.getLogger(logger).setLevel(logging.ERROR)
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(threadName)s L%(lineno)d: %(message)s',
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         level=level,
                         handlers=[console_handler, file_handler])
 
 def _handle_exception(exc_type, exc_value, exc_traceback):
-    """Log unhandled exceptions"""
+    """Log unhandled exceptions (level critical)"""
+    # Don't log ctrl+c
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
@@ -305,15 +334,30 @@ def _handle_exception(exc_type, exc_value, exc_traceback):
     logging.critical('Unhandled exception:\n%s', text)
 
 def main():
-    """Main function"""
+    """Main function
+
+    Usage: ./titletomemebot.py [-h] limit interval
+    """
     _setup_logging(logging.INFO)
     sys.excepthook = _handle_exception
-    threads = [SubmissionThread(), MessageThread()]
-    for thread in threads:
-        thread.daemon = True
-        thread.start()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('limit', help='amount of submissions/messages to process each cycle',
+                        type=int)
+    parser.add_argument('interval', help='time (in seconds) to wait between cycles', type=int)
+    args = parser.parse_args()
+    logging.debug('Initializing bot')
+    bot = TitleToImageBot('boottoobig')
     while True:
-        time.sleep(1)
+        try:
+            logging.info('Running bot')
+            bot.run(args.limit)
+            logging.info('bot finished, restarting in %s seconds', args.interval)
+        except (requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError,
+                ResponseException):
+            logging.error('Reddit api timed out, restarting')
+            continue
+        time.sleep(args.interval)
 
 if __name__ == '__main__':
     main()
