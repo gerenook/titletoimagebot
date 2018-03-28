@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.5'
+__version__ = '0.6'
 __author__ = 'gerenook'
 
 import argparse
@@ -86,7 +86,7 @@ class RedditImage:
             texts = self._split_title(title)
         else:
             texts = textwrap.wrap(title, 45)
-        whitespace_height = (line_height * len(texts)) + 20
+        whitespace_height = (line_height * len(texts)) + 10
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
@@ -159,12 +159,50 @@ class TitleToImageBot:
                          '^^[source](https://github.com/gerenook/titletoimagebot/' \
                          'blob/master/titletoimagebot.py)'
 
-    def _process_submission(self, submission, check_title):
+    def _reply_imgur_url(self, url, submission, source_comment):
+        """doc todo
+
+        :param url: -
+        :type url: str
+        :param submission: -
+        :type submission: -
+        :param source_comment: -
+        :type source_comment: -
+        :returns: True on succes, False on failure
+        :rtype: bool
+        """
+        logging.debug('Creating reply')
+        reply = self._template.format(image_url=url, comment_id='{comment_id}')
+        try:
+            if source_comment:
+                comment = source_comment.reply(reply)
+            else:
+                comment = submission.reply(reply)
+        except praw.exceptions.APIException as rate_error:
+            logging.error('Ratelimit error, setting retry flag in database | %s', rate_error)
+            self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
+            if source_comment:
+                self._sql.execute('DELETE FROM messages WHERE id=?', (source_comment.id,))
+            self._sql_connection.commit()
+            return False
+        except Exception as error:
+            logging.error('Cannot reply, skipping submission | %s', error)
+            return False
+        logging.debug('Editing comment with remove link')
+        comment.edit(reply.format(comment_id=comment.id))
+        self._sql.execute('UPDATE submissions SET retry=0 WHERE id=?', (submission.id,))
+        self._sql_connection.commit()
+        return True
+
+    def _process_submission(self, submission, source_comment=None, check_title=False):
         """Generate new image with added title and author, upload to imgur, reply to submission
 
         :param submission: the reddit submission object
         :type submission: praw.models.Submission
-        :param check_title: if True, check if title is part of rhyme
+        :param source_comment: the comment that mentioned the bot, reply to this comment.
+            If None, reply at top level. (default None)
+        :type source_comment: praw.models.Comment, NoneType
+        :param check_title: if True, check if title is part of rhyme. (default False)
         :type check_title: bool
         """
         # check db if submission was already processed
@@ -173,15 +211,43 @@ class TitleToImageBot:
         url = submission.url
         params1 = (submission.id,)
         params2 = (submission.id, author, title, url)
-        self._sql.execute('SELECT EXISTS(SELECT 1 FROM submissions WHERE id=? LIMIT 1)', params1)
-        if self._sql.fetchone()[0]:
-            logging.debug('Submission %s found in database, returning', params1[0])
-            return
-        logging.info('Found new submission id:%s title:%s', submission.id, title)
-        logging.debug('Adding submission to database')
-        self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES (?, ?, ?, ?)',
-                          params2)
-        self._sql_connection.commit()
+        self._sql.execute('SELECT * FROM submissions WHERE id=?', params1)
+        result = self._sql.fetchone()
+        if result:
+            db_id, _, _, _, db_imgur_url, db_retry, _ = result
+            if source_comment:
+                if db_retry:
+                    # imgur url should be in db -> try commenting again
+                    logging.info('Submission id:%s from username mention already in db ' +
+                                 'with retry flag set, trying to create reply', (submission.id,))
+                    self._reply_imgur_url(db_imgur_url, submission, source_comment)
+                    return
+                else:
+                    if db_imgur_url:
+                        logging.info('Submission id:%s from username mention already in db, ' +
+                                     'using db imgur url', (submission.id,))
+                        self._reply_imgur_url(db_imgur_url, submission, source_comment)
+                        return
+                    else:
+                        # edge case, redo everything
+                        pass
+            else:
+                if db_retry:
+                    # imgur url should be in db -> try commenting again
+                    logging.info('Found submissions id:%s with retry flag in db, ' +
+                                 'trying to create reply', submission.id)
+                    self._reply_imgur_url(db_imgur_url, submission, source_comment)
+                    return
+                else:
+                    # submission in db -> skip
+                    logging.debug('Submission %s found in database, returning', db_id)
+                    return
+        else:
+            logging.info('Found new submission id:%s title:%s', submission.id, title)
+            logging.debug('Adding submission to database')
+            self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES ' +
+                              '(?, ?, ?, ?)', params2)
+            self._sql_connection.commit()
         if check_title:
             triggers = [',', '.', ';', 'roses']
             if not any(t in title.lower() for t in triggers):
@@ -208,27 +274,17 @@ class TitleToImageBot:
         image.add_author(submission.author.name)
         logging.debug('Trying to upload new image')
         for _ in range(3):
-            url = image.upload(self._imgur)
-            if url:
+            imgur_url = image.upload(self._imgur)
+            if imgur_url:
                 break
             logging.warning('Upload failed, retrying')
-        if not url:
+        if not imgur_url:
             logging.error('Cannot upload new image, skipping submission')
             return
-        logging.debug('Creating reply')
-        reply = self._template.format(image_url=url, comment_id='{comment_id}')
-        try:
-            comment = submission.reply(reply)
-        except praw.exceptions.APIException as rate_error:
-            logging.error('Ratelimit error, removing submission from database | %s', rate_error)
-            self._sql.execute('DELETE FROM submissions WHERE id=?', params1)
-            self._sql_connection.commit()
+        params = (imgur_url, submission.id)
+        self._sql.execute('UPDATE submissions SET imgur_url=? WHERE id=?', params)
+        if not self._reply_imgur_url(imgur_url, submission, source_comment):
             return
-        except Exception as error:
-            logging.error('Cannot reply, skipping submission | %s', error)
-            return
-        logging.debug('Editing comment with remove link')
-        comment.edit(reply.format(comment_id=comment.id))
         logging.info('Successfully processed submission')
 
     def _process_remove_message(self, message):
@@ -296,7 +352,7 @@ class TitleToImageBot:
             return
         # process message
         if subject == 'username mention' and isinstance(message, praw.models.Comment):
-            self._process_submission(message.submission, False)
+            self._process_submission(message.submission, message, False)
             message.mark_read()
         elif subject == 'remove':
             self._process_remove_message(message)
@@ -319,7 +375,7 @@ class TitleToImageBot:
         """
         logging.debug('Processing last %s submissions...', limit)
         for submission in self._subreddit.new(limit=limit):
-            self._process_submission(submission, True)
+            self._process_submission(submission, check_title=True)
         logging.debug('Processing last %s messages, comment replies or username mentions...', limit)
         for message in self._reddit.inbox.all(limit=limit):
             self._process_message(message)
