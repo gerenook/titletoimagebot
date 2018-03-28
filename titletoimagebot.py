@@ -148,7 +148,7 @@ class TitleToImageBot:
         self._reddit = praw.Reddit(**apidata.reddit)
         self._subreddit = self._reddit.subreddit(subreddit)
         self._imgur = ImgurClient(**apidata.imgur)
-        self._template = '[Image with title]({image_url})\n\n' \
+        self._template = '[Image with added title]({image_url})\n\n' \
                          '---\n\n' \
                          '^^Summon ^^me ^^with ^^/u/TitleToImageBot ^^| ' \
                          '^^[remove](https://reddit.com/message/compose/' \
