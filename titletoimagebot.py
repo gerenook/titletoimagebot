@@ -35,16 +35,23 @@ class RedditImage:
     """
     font_file = 'segoeui.ttf'
     font_scale_factor = 20
+    textwrap_limit = 40
 
     def __init__(self, image):
         self._image = image
         self._width, self._height = image.size
+        self._font_title = \
+            ImageFont.truetype(RedditImage.font_file,
+                               self._width // RedditImage.font_scale_factor)
+        self._font_author = \
+            ImageFont.truetype(RedditImage.font_file,
+                               self._width // (RedditImage.font_scale_factor*2))
 
     def _split_title(self, title):
         """Split title
 
         Split title without removing delimiter (str.split() can't do this).
-        If no delimiter was found, wrap text at 45 characters
+        If no delimiter was found, wrap text
 
         :param title: the title to split
         :type title: str
@@ -69,29 +76,28 @@ class RedditImage:
             new = new[:-1]
         if delimiter:
             return new
-        return textwrap.wrap(title, 45)
+        return textwrap.wrap(title, RedditImage.textwrap_limit)
 
     def add_title(self, title, split=False):
         """Add title to new whitespace on image
 
         :param title: the title to add
         :type title: str
-        :param split: if True, split title on [',', ';', '.'], else wrap text at 45 characters
+        :param split: if True, split title on [',', ';', '.'], else wrap text
         :type split: bool
         """
-        font = ImageFont.truetype(RedditImage.font_file,
-                                  self._width // RedditImage.font_scale_factor)
-        line_height = font.getsize(title)[1]
+        line_height = self._font_title.getsize(title)[1]
         if split:
             texts = self._split_title(title)
         else:
-            texts = textwrap.wrap(title, 45)
-        whitespace_height = (line_height * len(texts)) + 10
+            texts = textwrap.wrap(title, RedditImage.textwrap_limit)
+        author_height = self._font_author.getsize('/')[1]
+        whitespace_height = (line_height * len(texts)) + author_height + 10
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            draw.text((10, i * line_height), text, '#000', font)
+            draw.text((10, i * line_height + author_height), text, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
 
@@ -101,13 +107,11 @@ class RedditImage:
         :param author: the author to add (without /u/)
         :type author: str
         """
-        font = ImageFont.truetype(RedditImage.font_file,
-                                  self._width // (RedditImage.font_scale_factor*2))
         text = '/u/' + author
         draw = ImageDraw.Draw(self._image)
-        size = font.getsize(text)
+        size = self._font_author.getsize(text)
         pos = (self._width - (size[0] + 10), 0)
-        draw.text(pos, text, '#000', font)
+        draw.text(pos, text, '#000', self._font_author)
 
     def upload(self, imgur):
         """Upload self._image to imgur
@@ -150,7 +154,7 @@ class TitleToImageBot:
         self._imgur = ImgurClient(**apidata.imgur)
         self._template = '[Image with added title]({image_url})\n\n' \
                          '---\n\n' \
-                         '^^Summon ^^me ^^with ^^/u/TitleToImageBot ^^| ' \
+                         '^^Summon ^^me ^^with ^^/u/titletoimagebot ^^| ' \
                          '^^[remove](https://reddit.com/message/compose/' \
                          '?to=TitleToImageBot&subject=remove&message={comment_id}) ' \
                          '^^\\(for ^^OP\\) ^^| ' \
