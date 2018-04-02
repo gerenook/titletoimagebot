@@ -209,6 +209,8 @@ class TitleToImageBot:
         :param check_title: if True, check if title is part of rhyme. (default False)
         :type check_title: bool
         """
+        if not submission.author:
+            return
         # check db if submission was already processed
         author = submission.author.name
         title = submission.title
