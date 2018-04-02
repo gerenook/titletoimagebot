@@ -22,7 +22,7 @@ from imgurpython import ImgurClient
 from imgurpython.helpers.error import (ImgurClientError,
                                        ImgurClientRateLimitError)
 from PIL import Image, ImageDraw, ImageFont
-from prawcore.exceptions import ResponseException
+from prawcore.exceptions import ResponseException, RequestException
 
 import apidata
 
@@ -35,7 +35,7 @@ class RedditImage:
     """
     font_file = 'segoeui.ttf'
     font_scale_factor = 20
-    textwrap_limit = 40
+    textwrap_limit = 43
 
     def __init__(self, image):
         self._image = image
@@ -335,7 +335,9 @@ class TitleToImageBot:
         :param message: the inbox message, comment reply or username mention
         :type message: praw.models.Message, praw.models.Comment
         """
-        # check db if submission was already processed
+        # check db if message was already processed
+        if not message.author:
+            return
         author = message.author.name
         subject = message.subject.lower()
         body = message.body.lower()
@@ -435,7 +437,8 @@ def main():
             logging.info('Bot finished, restarting in %s seconds', args.interval)
         except (requests.exceptions.ReadTimeout,
                 requests.exceptions.ConnectionError,
-                ResponseException):
+                ResponseException,
+                RequestException):
             logging.error('Reddit api timed out, restarting')
             continue
         time.sleep(args.interval)
