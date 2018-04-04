@@ -11,7 +11,6 @@ import sqlite3
 import sys
 import textwrap
 import time
-import traceback
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from os import remove
