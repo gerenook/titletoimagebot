@@ -2,11 +2,12 @@
 
 """meh"""
 
-__version__ = '0.6'
+__version__ = '0.6.1'
 __author__ = 'gerenook'
 
 import argparse
 import logging
+import re
 import sqlite3
 import sys
 import textwrap
@@ -21,7 +22,7 @@ from imgurpython import ImgurClient
 from imgurpython.helpers.error import (ImgurClientError,
                                        ImgurClientRateLimitError)
 from PIL import Image, ImageDraw, ImageFont
-from prawcore.exceptions import ResponseException, RequestException
+from prawcore.exceptions import RequestException, ResponseException
 
 import apidata
 
@@ -35,21 +36,25 @@ class RedditImage:
     font_file = 'segoeui.ttf'
     font_scale_factor = 20
     textwrap_limit = 43
+    regex_resolution = re.compile(r'\s?\[[0-9]+\s?[xX*×]\s?[0-9]+\]')
 
     def __init__(self, image):
         self._image = image
         self._width, self._height = image.size
-        self._font_title = \
-            ImageFont.truetype(RedditImage.font_file,
-                               self._width // RedditImage.font_scale_factor)
-        self._font_author = \
-            ImageFont.truetype(RedditImage.font_file,
-                               self._width // (RedditImage.font_scale_factor*2))
+        self._font_title = ImageFont.truetype(
+            RedditImage.font_file,
+            self._width // RedditImage.font_scale_factor
+        )
+        self._font_author = ImageFont.truetype(
+            RedditImage.font_file,
+            self._width // (RedditImage.font_scale_factor*2)
+        )
 
-    def _split_title(self, title):
+    @staticmethod
+    def _split_title(title):
         """Split title
 
-        Split title without removing delimiter (str.split() can't do this).
+        Split title without removing delimiter (str.split can't do this).
         If no delimiter was found, wrap text
 
         :param title: the title to split
@@ -85,9 +90,11 @@ class RedditImage:
         :param split: if True, split title on [',', ';', '.'], else wrap text
         :type split: bool
         """
+        # remove resolution appended to title (e.g. '<title> [1000 x 1000]')
+        title = RedditImage.regex_resolution.sub('', title)
         line_height = self._font_title.getsize(title)[1]
         if split:
-            texts = self._split_title(title)
+            texts = RedditImage._split_title(title)
         else:
             texts = textwrap.wrap(title, RedditImage.textwrap_limit)
         author_height = self._font_author.getsize('/')[1]
@@ -112,11 +119,13 @@ class RedditImage:
         pos = (self._width - (size[0] + 10), 0)
         draw.text(pos, text, '#000', self._font_author)
 
-    def upload(self, imgur):
+    def upload(self, imgur, config):
         """Upload self._image to imgur
 
         :param imgur: the imgur api client
         :type imgur: imgurpython.client.ImgurClient
+        :param config: imgur image config
+        :type config: dict
         :returns: imgur url if upload successful, else None
         :rtype: str
         """
@@ -125,14 +134,16 @@ class RedditImage:
         self._image.save(path_png)
         self._image.save(path_jpg)
         try:
-            response = imgur.upload_from_path(path_png)
-        except (ImgurClientError, ImgurClientRateLimitError) as error:
+            response = imgur.upload_from_path(path_png, config, anon=False)
+        except ImgurClientError as error:
             logging.warning('png upload failed, trying jpg | %s', error)
             try:
-                response = imgur.upload_from_path(path_jpg)
-            except (ImgurClientError, ImgurClientRateLimitError) as error:
+                response = imgur.upload_from_path(path_jpg, config, anon=False)
+            except ImgurClientError as error:
                 logging.error('jpg upload failed, returning | %s', error)
                 return None
+        except ImgurClientRateLimitError:
+            raise
         finally:
             remove(path_png)
             remove(path_jpg)
@@ -153,7 +164,7 @@ class TitleToImageBot:
         self._imgur = ImgurClient(**apidata.imgur)
         self._template = '[Image with added title]({image_url})\n\n' \
                          '---\n\n' \
-                         '^^Summon ^^me ^^with ^^/u/titletoimagebot ^^| ' \
+                         '^^summon ^^me ^^with ^^/u/titletoimagebot ^^| ' \
                          '^^[remove](https://reddit.com/message/compose/' \
                          '?to=TitleToImageBot&subject=remove&message={comment_id}) ' \
                          '^^\\(for ^^OP\\) ^^| ' \
@@ -171,7 +182,7 @@ class TitleToImageBot:
         :type submission: -
         :param source_comment: -
         :type source_comment: -
-        :returns: True on succes, False on failure
+        :returns: True on success, False on failure
         :rtype: bool
         """
         logging.debug('Creating reply')
@@ -181,8 +192,8 @@ class TitleToImageBot:
                 comment = source_comment.reply(reply)
             else:
                 comment = submission.reply(reply)
-        except praw.exceptions.APIException as rate_error:
-            logging.error('Ratelimit error, setting retry flag in database | %s', rate_error)
+        except praw.exceptions.APIException as error:
+            logging.error('Reddit api error, setting retry flag in database | %s', error)
             self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
             if source_comment:
                 self._sql.execute('DELETE FROM messages WHERE id=?', (source_comment.id,))
@@ -208,6 +219,8 @@ class TitleToImageBot:
         :param check_title: if True, check if title is part of rhyme. (default False)
         :type check_title: bool
         """
+        # TODO really need to clean this method up
+        # return if author account is deleted
         if not submission.author:
             return
         # check db if submission was already processed
@@ -220,33 +233,16 @@ class TitleToImageBot:
         result = self._sql.fetchone()
         if result:
             db_id, _, _, _, db_imgur_url, db_retry, _ = result
-            if source_comment:
-                if db_retry:
-                    # imgur url should be in db -> try commenting again
-                    logging.info('Submission id:%s from username mention already in db ' +
-                                 'with retry flag set, trying to create reply', (submission.id,))
-                    self._reply_imgur_url(db_imgur_url, submission, source_comment)
-                    return
-                else:
-                    if db_imgur_url:
-                        logging.info('Submission id:%s from username mention already in db, ' +
-                                     'using db imgur url', (submission.id,))
-                        self._reply_imgur_url(db_imgur_url, submission, source_comment)
-                        return
-                    else:
-                        # edge case, redo everything
-                        pass
-            else:
-                if db_retry:
-                    # imgur url should be in db -> try commenting again
-                    logging.info('Found submissions id:%s with retry flag in db, ' +
+            if db_retry or source_comment:
+                if db_imgur_url:
+                    logging.info('Submission id:%s found in database with imgur url set, ' +
                                  'trying to create reply', submission.id)
                     self._reply_imgur_url(db_imgur_url, submission, source_comment)
                     return
-                else:
-                    # submission in db -> skip
-                    logging.debug('Submission %s found in database, returning', db_id)
-                    return
+            else:
+                # skip submission
+                logging.debug('Submission id:%s found in database, returning', db_id)
+                return
         else:
             logging.info('Found new submission id:%s title:%s', submission.id, title)
             logging.debug('Adding submission to database')
@@ -278,11 +274,21 @@ class TitleToImageBot:
         image.add_title(title, submission.subreddit.display_name == 'boottoobig')
         image.add_author(submission.author.name)
         logging.debug('Trying to upload new image')
-        for _ in range(3):
-            imgur_url = image.upload(self._imgur)
-            if imgur_url:
-                break
-            logging.warning('Upload failed, retrying')
+        imgur_config = {
+            'album': None,
+            'name': submission.id,
+            'title': title,
+            'description': submission.shortlink
+        }
+        try:
+            imgur_url = image.upload(self._imgur, imgur_config)
+        except ImgurClientRateLimitError as rate_error:
+            logging.error('Imgur ratelimit error, setting retry flag in database | %s', rate_error)
+            self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
+            if source_comment:
+                self._sql.execute('DELETE FROM messages WHERE id=?', (source_comment.id,))
+            self._sql_connection.commit()
+            return
         if not imgur_url:
             logging.error('Cannot upload new image, skipping submission')
             return
@@ -432,11 +438,12 @@ def main():
     args = parser.parse_args()
     logging.debug('Initializing bot')
     bot = TitleToImageBot('boottoobig')
+    logging.info('Bot initialized')
     while True:
         try:
-            logging.info('Running bot')
+            logging.debug('Running bot')
             bot.run(args.limit)
-            logging.info('Bot finished, restarting in %s seconds', args.interval)
+            logging.debug('Bot finished, restarting in %s seconds', args.interval)
         except (requests.exceptions.ReadTimeout,
                 requests.exceptions.ConnectionError,
                 ResponseException,
