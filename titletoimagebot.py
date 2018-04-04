@@ -325,7 +325,7 @@ class TitleToImageBot:
         """
         message_author = message.author.name
         logging.info('Found new feedback message from %s', message_author)
-        subject = 'TitleToImageBot feedback from ' + message_author
+        subject = 'TitleToImageBot feedback from {}'.format(message_author)
         body = message.body
         self._reddit.redditor(__author__).message(subject, body)
         message.mark_read()
@@ -337,9 +337,9 @@ class TitleToImageBot:
         :param message: the inbox message, comment reply or username mention
         :type message: praw.models.Message, praw.models.Comment
         """
-        # check db if message was already processed
         if not message.author:
             return
+        # check db if message was already processed
         author = message.author.name
         subject = message.subject.lower()
         body = message.body.lower()
@@ -410,18 +410,19 @@ def _setup_logging(level):
                         handlers=[console_handler, file_handler])
 
 def _handle_exception(exc_type, exc_value, exc_traceback):
-    """Log unhandled exceptions (level critical)"""
+    """Log unhandled exceptions (see https://stackoverflow.com/a/16993115)"""
     # Don't log ctrl+c
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    text = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    logging.critical('Unhandled exception:\n%s', text)
+    logging.critical('Unhandled exception:\n', exc_info=(exc_type, exc_value, exc_traceback))
 
 def main():
     """Main function
 
     Usage: ./titletoimagebot.py [-h] limit interval
+
+    e.g. './titletoimagebot 10 60' will process the last 10 submissions/messages every 60 seconds.
     """
     _setup_logging(logging.INFO)
     sys.excepthook = _handle_exception
