@@ -10,7 +10,6 @@ import logging
 import re
 import sqlite3
 import sys
-import textwrap
 import time
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
@@ -33,9 +32,10 @@ class RedditImage:
     :param image: the image
     :type image: PIL.Image.Image
     """
+    margin_left = 20
+    margin_bot = 20
     font_file = 'segoeui.ttf'
     font_scale_factor = 20
-    textwrap_limit = 43
     regex_resolution = re.compile(r'\s?\[[0-9]+\s?[xX*×]\s?[0-9]+\]')
 
     def __init__(self, image):
@@ -50,60 +50,68 @@ class RedditImage:
             self._width // (RedditImage.font_scale_factor*2)
         )
 
-    @staticmethod
-    def _split_title(title):
-        """Split title
-
-        Split title without removing delimiter (str.split can't do this).
-        If no delimiter was found, wrap text
+    def _split_title(self, title, boot):
+        """Split title into multiple lines
 
         :param title: the title to split
         :type title: str
+        :param boot: if True, split title on [',', ';', '.'], else wrap text
+        :type boot: bool
         :returns: split title
         :rtype: list
         """
-        all_delimiters = [',', ';', '.']
-        delimiter = None
+        if boot:
+            all_delimiters = [',', ';', '.']
+            delimiter = None
+            new = ['']
+            i = 0
+            for character in title:
+                if character == ' ' and not new[i]:
+                    continue
+                new[i] += character
+                if not delimiter:
+                    if character in all_delimiters:
+                        delimiter = character
+                if character == delimiter:
+                    new.append('')
+                    i += 1
+            if not new[-1]:
+                new = new[:-1]
+            if delimiter:
+                return new
+        # no boot, wrap text
         new = ['']
-        i = 0
-        for character in title:
-            if character == ' ' and not new[i]:
-                continue
-            new[i] += character
-            if not delimiter:
-                if character in all_delimiters:
-                    delimiter = character
-            if character == delimiter:
-                new.append('')
-                i += 1
-        if not new[-1]:
-            new = new[:-1]
-        if delimiter:
-            return new
-        return textwrap.wrap(title, RedditImage.textwrap_limit)
+        line_words = []
+        words = title.split()
+        for word in words:
+            line_words.append(word)
+            new[-1] = ' '.join(line_words)
+            if self._font_title.getsize(new[-1])[0] + RedditImage.margin_left > self._width:
+                new[-1] = new[-1][:-len(word)].strip()
+                new.append(word)
+                line_words = [word]
+        # remove empty strings
+        return [n for n in new if n]
 
-    def add_title(self, title, split=False):
+    def add_title(self, title, boot):
         """Add title to new whitespace on image
 
         :param title: the title to add
         :type title: str
-        :param split: if True, split title on [',', ';', '.'], else wrap text
-        :type split: bool
+        :param boot: if True, split title on [',', ';', '.'], else wrap text
+        :type boot: bool
         """
         # remove resolution appended to title (e.g. '<title> [1000 x 1000]')
         title = RedditImage.regex_resolution.sub('', title)
         line_height = self._font_title.getsize(title)[1]
-        if split:
-            texts = RedditImage._split_title(title)
-        else:
-            texts = textwrap.wrap(title, RedditImage.textwrap_limit)
+        texts = self._split_title(title, boot)
         author_height = self._font_author.getsize('/')[1]
-        whitespace_height = (line_height * len(texts)) + author_height + 10
+        whitespace_height = (line_height * len(texts)) + author_height + RedditImage.margin_bot
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            draw.text((10, i * line_height + author_height), text, '#000', self._font_title)
+            draw.text((RedditImage.margin_left, i * line_height + author_height), text, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
 
@@ -250,7 +258,7 @@ class TitleToImageBot:
                               '(?, ?, ?, ?)', params2)
             self._sql_connection.commit()
         if check_title:
-            triggers = [',', '.', ';', 'roses']
+            triggers = [',', ';', 'roses']
             if not any(t in title.lower() for t in triggers):
                 logging.info('Title is probably not part of rhyme, skipping submission')
                 return
