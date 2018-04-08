@@ -75,10 +75,12 @@ class RedditImage:
                 if character == delimiter:
                     new.append('')
                     i += 1
-            if not new[-1]:
-                new = new[:-1]
+            # quick fix
+            for n in new:
+                if self._font_title.getsize(n)[0] + RedditImage.margin_left > self._width:
+                    delimiter = None
             if delimiter:
-                return new
+                return [n for n in new if n]
         # no boot, wrap text
         new = ['']
         line_words = []
@@ -111,7 +113,8 @@ class RedditImage:
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            draw.text((RedditImage.margin_left, i * line_height + author_height), text, '#000', self._font_title)
+            draw.text((RedditImage.margin_left, i * line_height + author_height),
+                      text, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
 
