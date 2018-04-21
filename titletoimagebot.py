@@ -2,10 +2,11 @@
 
 """meh"""
 
-__version__ = '0.6.1'
+__version__ = '0.6.2'
 __author__ = 'gerenook'
 
 import argparse
+import json
 import logging
 import re
 import sqlite3
@@ -32,9 +33,8 @@ class RedditImage:
     :param image: the image
     :type image: PIL.Image.Image
     """
-    margin_left = 20
-    margin_bot = 20
-    font_file = 'segoeui.ttf'
+    margin = 10
+    font_file = 'seguiemj.ttf'
     font_scale_factor = 20
     regex_resolution = re.compile(r'\s?\[[0-9]+\s?[xX*×]\s?[0-9]+\]')
 
@@ -77,7 +77,7 @@ class RedditImage:
                     i += 1
             # quick fix
             for n in new:
-                if self._font_title.getsize(n)[0] + RedditImage.margin_left > self._width:
+                if self._font_title.getsize(n)[0] + RedditImage.margin > self._width:
                     delimiter = None
             if delimiter:
                 return [n for n in new if n]
@@ -88,7 +88,7 @@ class RedditImage:
         for word in words:
             line_words.append(word)
             new[-1] = ' '.join(line_words)
-            if self._font_title.getsize(new[-1])[0] + RedditImage.margin_left > self._width:
+            if self._font_title.getsize(new[-1])[0] + RedditImage.margin > self._width:
                 new[-1] = new[-1][:-len(word)].strip()
                 new.append(word)
                 line_words = [word]
@@ -105,15 +105,15 @@ class RedditImage:
         """
         # remove resolution appended to title (e.g. '<title> [1000 x 1000]')
         title = RedditImage.regex_resolution.sub('', title)
-        line_height = self._font_title.getsize(title)[1]
+        line_height = self._font_title.getsize(title)[1] + RedditImage.margin
         texts = self._split_title(title, boot)
-        author_height = self._font_author.getsize('/')[1]
-        whitespace_height = (line_height * len(texts)) + author_height + RedditImage.margin_bot
+        author_height = self._font_author.getsize('/')[1] + RedditImage.margin
+        whitespace_height = (line_height * len(texts)) + author_height
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            draw.text((RedditImage.margin_left, i * line_height + author_height),
+            draw.text((RedditImage.margin, i * line_height + author_height),
                       text, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
@@ -126,8 +126,8 @@ class RedditImage:
         """
         text = '/u/' + author
         draw = ImageDraw.Draw(self._image)
-        size = self._font_author.getsize(text)
-        pos = (self._width - (size[0] + 10), 0)
+        text_width = self._font_author.getsize(text)[0]
+        pos = (self._width - text_width - RedditImage.margin, RedditImage.margin // 2)
         draw.text(pos, text, '#000', self._font_author)
 
     def upload(self, imgur, config):
@@ -173,16 +173,18 @@ class TitleToImageBot:
         self._reddit = praw.Reddit(**apidata.reddit)
         self._subreddit = self._reddit.subreddit(subreddit)
         self._imgur = ImgurClient(**apidata.imgur)
-        self._template = '[Image with added title]({image_url})\n\n' \
-                         '---\n\n' \
-                         '^^summon ^^me ^^with ^^/u/titletoimagebot ^^| ' \
-                         '^^[remove](https://reddit.com/message/compose/' \
-                         '?to=TitleToImageBot&subject=remove&message={comment_id}) ' \
-                         '^^\\(for ^^OP\\) ^^| ' \
-                         '^^[feedback](https://reddit.com/message/compose/' \
-                         '?to=TitleToImageBot&subject=feedback) ^^| ' \
-                         '^^[source](https://github.com/gerenook/titletoimagebot/' \
-                         'blob/master/titletoimagebot.py)'
+        self._template = (
+            '[Image with added title]({image_url})\n\n'
+            '---\n\n'
+            '^^summon ^^me ^^with ^^/u/titletoimagebot ^^| '
+            '^^[remove](https://reddit.com/message/compose/'
+            '?to=TitleToImageBot&subject=remove&message={comment_id}) '
+            '^^\\(for ^^OP\\) ^^| '
+            '^^[feedback](https://reddit.com/message/compose/'
+            '?to=TitleToImageBot&subject=feedback%20{submission_id}) ^^| '
+            '^^[source](https://github.com/gerenook/titletoimagebot/'
+            'blob/master/titletoimagebot.py)'
+        )
 
     def _reply_imgur_url(self, url, submission, source_comment):
         """doc todo
@@ -197,7 +199,11 @@ class TitleToImageBot:
         :rtype: bool
         """
         logging.debug('Creating reply')
-        reply = self._template.format(image_url=url, comment_id='{comment_id}')
+        reply = self._template.format(
+            image_url=url,
+            comment_id='{comment_id}',
+            submission_id=submission.id
+        )
         try:
             if source_comment:
                 comment = source_comment.reply(reply)
@@ -219,7 +225,7 @@ class TitleToImageBot:
         self._sql_connection.commit()
         return True
 
-    def _process_submission(self, submission, source_comment=None, check_title=False):
+    def _process_submission(self, submission, source_comment=None):
         """Generate new image with added title and author, upload to imgur, reply to submission
 
         :param submission: the reddit submission object
@@ -227,8 +233,6 @@ class TitleToImageBot:
         :param source_comment: the comment that mentioned the bot, reply to this comment.
             If None, reply at top level. (default None)
         :type source_comment: praw.models.Comment, NoneType
-        :param check_title: if True, check if title is part of rhyme. (default False)
-        :type check_title: bool
         """
         # TODO really need to clean this method up
         # return if author account is deleted
@@ -260,7 +264,8 @@ class TitleToImageBot:
             self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES ' +
                               '(?, ?, ?, ?)', params2)
             self._sql_connection.commit()
-        if check_title:
+        boot = submission.subreddit.display_name == 'boottoobig'
+        if boot and not source_comment:
             triggers = [',', ';', 'roses']
             if not any(t in title.lower() for t in triggers):
                 logging.info('Title is probably not part of rhyme, skipping submission')
@@ -282,7 +287,7 @@ class TitleToImageBot:
                 return
         image = RedditImage(img)
         logging.debug('Adding title and author')
-        image.add_title(title, submission.subreddit.display_name == 'boottoobig')
+        image.add_title(title, boot)
         image.add_author(submission.author.name)
         logging.debug('Trying to upload new image')
         imgur_config = {
@@ -342,7 +347,7 @@ class TitleToImageBot:
         message_author = message.author.name
         logging.info('Found new feedback message from %s', message_author)
         subject = 'TitleToImageBot feedback from {}'.format(message_author)
-        body = message.body
+        body = 'Subject: {}\n\nBody: {}'.format(message.subject, message.body)
         self._reddit.redditor(__author__).message(subject, body)
         message.mark_read()
         logging.info('Forwarded message to author')
@@ -376,11 +381,11 @@ class TitleToImageBot:
             return
         # process message
         if subject == 'username mention' and isinstance(message, praw.models.Comment):
-            self._process_submission(message.submission, message, False)
+            self._process_submission(message.submission, message)
             message.mark_read()
         elif subject == 'remove':
             self._process_remove_message(message)
-        elif subject == 'feedback':
+        elif subject.startswith('feedback'):
             self._process_feedback_message(message)
         elif 'good bot' in body and len(body) < 12:
             logging.info('Good bot message or comment reply found, marking as read')
@@ -399,7 +404,7 @@ class TitleToImageBot:
         """
         logging.debug('Processing last %s submissions...', limit)
         for submission in self._subreddit.new(limit=limit):
-            self._process_submission(submission, check_title=True)
+            self._process_submission(submission)
         logging.debug('Processing last %s messages, comment replies or username mentions...', limit)
         for message in self._reddit.inbox.all(limit=limit):
             self._process_message(message)
@@ -448,7 +453,9 @@ def main():
     parser.add_argument('interval', help='time (in seconds) to wait between cycles', type=int)
     args = parser.parse_args()
     logging.debug('Initializing bot')
-    bot = TitleToImageBot('boottoobig')
+    with open('subreddits.json') as subreddits_file:
+        sub = '+'.join(json.load(subreddits_file))
+    bot = TitleToImageBot(sub)
     logging.info('Bot initialized')
     while True:
         try:

@@ -2,5 +2,6 @@ __pycache__/
 log/
 database.db
 apidata.py
-segoeui.ttf
 test.py
+segoeui.ttf
+seguiemj.ttf
