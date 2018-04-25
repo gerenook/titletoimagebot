@@ -176,13 +176,13 @@ class TitleToImageBot:
         self._template = (
             '[Image with added title]({image_url})\n\n'
             '---\n\n'
-            '^^summon ^^me ^^with ^^/u/titletoimagebot ^^| '
-            '^^[remove](https://reddit.com/message/compose/'
+            '^summon ^me ^with ^/u/titletoimagebot ^| '
+            '^[remove](https://reddit.com/message/compose/'
             '?to=TitleToImageBot&subject=remove&message={comment_id}) '
-            '^^\\(for ^^OP\\) ^^| '
-            '^^[feedback](https://reddit.com/message/compose/'
-            '?to=TitleToImageBot&subject=feedback%20{submission_id}) ^^| '
-            '^^[source](https://github.com/gerenook/titletoimagebot/'
+            '^\\(for ^OP\\) ^| '
+            '^[feedback](https://reddit.com/message/compose/'
+            '?to=TitleToImageBot&subject=feedback%20{submission_id}) ^| '
+            '^[source](https://github.com/gerenook/titletoimagebot/'
             'blob/master/titletoimagebot.py)'
         )
 
@@ -238,6 +238,14 @@ class TitleToImageBot:
         # return if author account is deleted
         if not submission.author:
             return
+        sub = submission.subreddit.display_name
+        # in r/fakehistoryporn, only process upvoted submissions
+        score_threshold = 500
+        if sub == 'fakehistoryporn' and not source_comment:
+            if submission.score < score_threshold:
+                logging.debug('Score below %d in subreddit %s, skipping submission',
+                              score_threshold, sub)
+                return
         # check db if submission was already processed
         author = submission.author.name
         title = submission.title
@@ -254,17 +262,22 @@ class TitleToImageBot:
                                  'trying to create reply', submission.id)
                     self._reply_imgur_url(db_imgur_url, submission, source_comment)
                     return
+                else:
+                    logging.info('Submission id:%s found in database without imgur url set, ',
+                                 submission.id)
             else:
                 # skip submission
                 logging.debug('Submission id:%s found in database, returning', db_id)
                 return
         else:
-            logging.info('Found new submission id:%s title:%s', submission.id, title)
+            logging.info('Found new submission subreddit:%s id:%s title:%s',
+                         sub, submission.id, title)
             logging.debug('Adding submission to database')
             self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES ' +
                               '(?, ?, ?, ?)', params2)
             self._sql_connection.commit()
-        boot = submission.subreddit.display_name == 'boottoobig'
+        # in r/boottoobig, only process submission with a rhyme in the title
+        boot = sub == 'boottoobig'
         if boot and not source_comment:
             triggers = [',', ';', 'roses']
             if not any(t in title.lower() for t in triggers):
