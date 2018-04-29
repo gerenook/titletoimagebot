@@ -107,28 +107,15 @@ class RedditImage:
         title = RedditImage.regex_resolution.sub('', title)
         line_height = self._font_title.getsize(title)[1] + RedditImage.margin
         texts = self._split_title(title, boot)
-        author_height = self._font_author.getsize('/')[1] + RedditImage.margin
-        whitespace_height = (line_height * len(texts)) + author_height
+        whitespace_height = (line_height * len(texts)) + RedditImage.margin
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, text in enumerate(texts):
-            draw.text((RedditImage.margin, i * line_height + author_height),
+            draw.text((RedditImage.margin, i * line_height + RedditImage.margin),
                       text, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
-
-    def add_author(self, author):
-        """Add /u/author to top right of image
-
-        :param author: the author to add (without /u/)
-        :type author: str
-        """
-        text = '/u/' + author
-        draw = ImageDraw.Draw(self._image)
-        text_width = self._font_author.getsize(text)[0]
-        pos = (self._width - text_width - RedditImage.margin, RedditImage.margin // 2)
-        draw.text(pos, text, '#000', self._font_author)
 
     def upload(self, imgur, config):
         """Upload self._image to imgur
@@ -301,12 +288,11 @@ class TitleToImageBot:
         image = RedditImage(img)
         logging.debug('Adding title and author')
         image.add_title(title, boot)
-        image.add_author(submission.author.name)
         logging.debug('Trying to upload new image')
         imgur_config = {
             'album': None,
             'name': submission.id,
-            'title': title,
+            'title': '"{}" by /u/{}'.format(title, author),
             'description': submission.shortlink
         }
         try:
@@ -410,13 +396,13 @@ class TitleToImageBot:
     def run(self, limit):
         """Run the bot
 
-        Process new submissions and messages
+        Process submissions and messages
 
         :param limit: amount of submissions/messages to process
         :type limit: int
         """
         logging.debug('Processing last %s submissions...', limit)
-        for submission in self._subreddit.new(limit=limit):
+        for submission in self._subreddit.hot(limit=limit):
             self._process_submission(submission)
         logging.debug('Processing last %s messages, comment replies or username mentions...', limit)
         for message in self._reddit.inbox.all(limit=limit):
