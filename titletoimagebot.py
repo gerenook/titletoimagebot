@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.6.3'
+__version__ = '0.6.4'
 __author__ = 'gerenook'
 
 import argparse
@@ -151,6 +151,102 @@ class RedditImage:
         return response['link']
 
 
+class Database:
+    """Database class
+
+    :param db_filename: database filename
+    :type db_filename: str
+    """
+    def __init__(self, db_filename):
+        self._sql_conn = sqlite3.connect(db_filename)
+        self._sql = self._sql_conn.cursor()
+
+    def message_exists(self, message_id):
+        """Check if message exists in messages table
+
+        :param message_id: the message id to check
+        :type message_id: str
+        :returns: True if message was found, else False
+        :rtype: bool
+        """
+        self._sql.execute('SELECT EXISTS(SELECT 1 FROM messages WHERE id=? LIMIT 1)', (message_id,))
+        if self._sql.fetchone()[0]:
+            return True
+        return False
+
+    def message_insert(self, message_id, author, subject, body):
+        """Insert message into messages table"""
+        self._sql.execute('INSERT INTO messages (id, author, subject, body) VALUES (?, ?, ?, ?)',
+                          (message_id, author, subject, body))
+        self._sql_conn.commit()
+
+    def submission_select(self, submission_id):
+        """Select all attributes of submission
+
+        :param submission_id: the submission id
+        :type submission_id: str
+        :returns: query result, None if id not found
+        :rtype: dict, NoneType
+        """
+        self._sql.execute('SELECT * FROM submissions WHERE id=?', (submission_id,))
+        result = self._sql.fetchone()
+        if not result:
+            return None
+        return {
+            'id': result[0],
+            'author': result[1],
+            'title': result[2],
+            'url': result[3],
+            'imgur_url': result[4],
+            'retry': result[5],
+            'timestamp': result[6]
+        }
+
+    def submission_insert(self, submission_id, author, title, url):
+        """Insert submission into submissions table"""
+        self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES (?, ?, ?, ?)',
+                          (submission_id, author, title, url))
+        self._sql_conn.commit()
+
+    def submission_set_retry(self, submission_id, delete_message=False, message_id=None):
+        """Set retry flag for given submission, delete message from db if desired
+
+        :param submission_id: the submission id to set retry
+        :type submission_id: str
+        :param delete_message: if True, delete message from messages table
+        :type delete_message: bool
+        :param message_id: the message id to delete
+        :type message_id: str
+        """
+        self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission_id,))
+        if delete_message:
+            if not message_id:
+                raise TypeError('If delete_message is True, message_id must be set')
+            self._sql.execute('DELETE FROM messages WHERE id=?', (message_id,))
+        self._sql_conn.commit()
+
+    def submission_clear_retry(self, submission_id):
+        """Clear retry flag for given submission_id
+
+        :param submission_id: the submission id to clear retry
+        :type submission_id: str
+        """
+        self._sql.execute('UPDATE submissions SET retry=0 WHERE id=?', (submission_id,))
+        self._sql_conn.commit()
+
+    def submission_set_imgur_url(self, submission_id, imgur_url):
+        """Set imgur url for given submission
+
+        :param submission_id: the submission id to set imgur url
+        :type submission_id: str
+        :param imgur_url: the imgur url to update
+        :type imgur_url: str
+        """
+        self._sql.execute('UPDATE submissions SET imgur_url=? WHERE id=?',
+                          (imgur_url, submission_id))
+        self._sql_conn.commit()
+
+
 class TitleToImageBot:
     """TitleToImageBot class
 
@@ -158,8 +254,7 @@ class TitleToImageBot:
     :type subreddit: str
     """
     def __init__(self, subreddit):
-        self._sql_connection = sqlite3.connect('database.db')
-        self._sql = self._sql_connection.cursor()
+        self._db = Database('database.db')
         self._reddit = praw.Reddit(**apidata.reddit)
         self._subreddit = self._reddit.subreddit(subreddit)
         self._imgur = ImgurClient(**apidata.imgur)
@@ -197,16 +292,12 @@ class TitleToImageBot:
                 submission.reply(reply)
         except praw.exceptions.APIException as error:
             logging.error('Reddit api error, setting retry flag in database | %s', error)
-            self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
-            if source_comment:
-                self._sql.execute('DELETE FROM messages WHERE id=?', (source_comment.id,))
-            self._sql_connection.commit()
+            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment.id)
             return False
         except Exception as error:
             logging.error('Cannot reply, skipping submission | %s', error)
             return False
-        self._sql.execute('UPDATE submissions SET retry=0 WHERE id=?', (submission.id,))
-        self._sql_connection.commit()
+        self._db.submission_clear_retry(submission.id)
         return True
 
     def _process_submission(self, submission, source_comment=None):
@@ -234,32 +325,26 @@ class TitleToImageBot:
         author = submission.author.name
         title = submission.title
         url = submission.url
-        params1 = (submission.id,)
-        params2 = (submission.id, author, title, url)
-        self._sql.execute('SELECT * FROM submissions WHERE id=?', params1)
-        result = self._sql.fetchone()
+        result = self._db.submission_select(submission.id)
         if result:
-            db_id, _, _, _, db_imgur_url, db_retry, _ = result
-            if db_retry or source_comment:
-                if db_imgur_url:
+            if result['retry'] or source_comment:
+                if result['imgur_url']:
                     logging.info('Submission id:%s found in database with imgur url set, ' +
                                  'trying to create reply', submission.id)
-                    self._reply_imgur_url(db_imgur_url, submission, source_comment)
+                    self._reply_imgur_url(result['imgur_url'], submission, source_comment)
                     return
                 else:
                     logging.info('Submission id:%s found in database without imgur url set, ',
                                  submission.id)
             else:
                 # skip submission
-                logging.debug('Submission id:%s found in database, returning', db_id)
+                logging.debug('Submission id:%s found in database, returning', result['id'])
                 return
         else:
             logging.info('Found new submission subreddit:%s id:%s title:%s',
                          sub, submission.id, title)
             logging.debug('Adding submission to database')
-            self._sql.execute('INSERT INTO submissions (id, author, title, url) VALUES ' +
-                              '(?, ?, ?, ?)', params2)
-            self._sql_connection.commit()
+            self._db.submission_insert(submission.id, author, title, url)
         # in r/boottoobig, only process submission with a rhyme in the title
         boot = sub == 'boottoobig'
         if boot and not source_comment:
@@ -296,16 +381,12 @@ class TitleToImageBot:
             imgur_url = image.upload(self._imgur, imgur_config)
         except ImgurClientRateLimitError as rate_error:
             logging.error('Imgur ratelimit error, setting retry flag in database | %s', rate_error)
-            self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
-            if source_comment:
-                self._sql.execute('DELETE FROM messages WHERE id=?', (source_comment.id,))
-            self._sql_connection.commit()
+            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment.id)
             return
         if not imgur_url:
             logging.error('Cannot upload new image, skipping submission')
             return
-        params = (imgur_url, submission.id)
-        self._sql.execute('UPDATE submissions SET imgur_url=? WHERE id=?', params)
+        self._db.submission_set_imgur_url(submission.id, imgur_url)
         if not self._reply_imgur_url(imgur_url, submission, source_comment):
             return
         logging.info('Successfully processed submission')
@@ -336,17 +417,12 @@ class TitleToImageBot:
         author = message.author.name
         subject = message.subject.lower()
         body = message.body.lower()
-        params1 = (message.id,)
-        params2 = (message.id, author, subject, body)
-        self._sql.execute('SELECT EXISTS(SELECT 1 FROM messages WHERE id=? LIMIT 1)', params1)
-        if self._sql.fetchone()[0]:
-            logging.debug('Message %s found in database, returning', params1[0])
+        if self._db.message_exists(message.id):
+            logging.debug('Message %s found in database, returning', message.id)
             return
         logging.debug('Message: %s | %s', subject, body)
         logging.debug('Adding message to database')
-        self._sql.execute('INSERT INTO messages (id, author, subject, body) VALUES (?, ?, ?, ?)',
-                          params2)
-        self._sql_connection.commit()
+        self._db.message_insert(message.id, author, subject, body)
         # check if message was sent, instead of received
         if author == self._reddit.user.me().name:
             logging.debug('Message was sent, returning')
