@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.6.2'
+__version__ = '0.6.3'
 __author__ = 'gerenook'
 
 import argparse
@@ -45,55 +45,58 @@ class RedditImage:
             RedditImage.font_file,
             self._width // RedditImage.font_scale_factor
         )
-        self._font_author = ImageFont.truetype(
-            RedditImage.font_file,
-            self._width // (RedditImage.font_scale_factor*2)
-        )
 
-    def _split_title(self, title, boot):
-        """Split title into multiple lines
+    def _split_title(self, title):
+        """Split title on [',', ';', '.'] into multiple lines
 
         :param title: the title to split
         :type title: str
-        :param boot: if True, split title on [',', ';', '.'], else wrap text
-        :type boot: bool
         :returns: split title
         :rtype: list
         """
-        if boot:
-            all_delimiters = [',', ';', '.']
-            delimiter = None
-            new = ['']
-            i = 0
-            for character in title:
-                if character == ' ' and not new[i]:
-                    continue
-                new[i] += character
-                if not delimiter:
-                    if character in all_delimiters:
-                        delimiter = character
-                if character == delimiter:
-                    new.append('')
-                    i += 1
-            # quick fix
-            for n in new:
-                if self._font_title.getsize(n)[0] + RedditImage.margin > self._width:
-                    delimiter = None
-            if delimiter:
-                return [n for n in new if n]
-        # no boot, wrap text
-        new = ['']
+        lines = ['']
+        all_delimiters = [',', ';', '.']
+        delimiter = None
+        for character in title:
+            # don't draw ' ' on a new line
+            if character == ' ' and not lines[-1]:
+                continue
+            # add character to current line
+            lines[-1] += character
+            # find delimiter
+            if not delimiter:
+                if character in all_delimiters:
+                    delimiter = character
+            # end of line
+            if character == delimiter:
+                # wrap title if a line is too long
+                if self._font_title.getsize(lines[-1])[0] + RedditImage.margin > self._width:
+                    return self._wrap_title(title)
+                # add new line
+                lines.append('')
+        # remove empty lines (if delimiter is last character)
+        return [line for line in lines if line]
+
+    def _wrap_title(self, title):
+        """Wrap title
+
+        :param title: the title to wrap
+        :type title: str
+        :returns: wrapped title
+        :rtype: list
+        """
+        lines = ['']
         line_words = []
         words = title.split()
         for word in words:
             line_words.append(word)
-            new[-1] = ' '.join(line_words)
-            if self._font_title.getsize(new[-1])[0] + RedditImage.margin > self._width:
-                new[-1] = new[-1][:-len(word)].strip()
-                new.append(word)
+            lines[-1] = ' '.join(line_words)
+            if self._font_title.getsize(lines[-1])[0] + RedditImage.margin > self._width:
+                lines[-1] = lines[-1][:-len(word)].strip()
+                lines.append(word)
                 line_words = [word]
-        # remove empty strings
-        return [n for n in new if n]
+        # remove empty lines
+        return [line for line in lines if line]
 
     def add_title(self, title, boot):
         """Add title to new whitespace on image
@@ -106,14 +109,14 @@ class RedditImage:
         # remove resolution appended to title (e.g. '<title> [1000 x 1000]')
         title = RedditImage.regex_resolution.sub('', title)
         line_height = self._font_title.getsize(title)[1] + RedditImage.margin
-        texts = self._split_title(title, boot)
-        whitespace_height = (line_height * len(texts)) + RedditImage.margin
+        lines = self._split_title(title) if boot else self._wrap_title(title)
+        whitespace_height = (line_height * len(lines)) + RedditImage.margin
         new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
-        for i, text in enumerate(texts):
+        for i, line in enumerate(lines):
             draw.text((RedditImage.margin, i * line_height + RedditImage.margin),
-                      text, '#000', self._font_title)
+                      line, '#000', self._font_title)
         self._width, self._height = new.size
         self._image = new
 
@@ -125,7 +128,7 @@ class RedditImage:
         :param config: imgur image config
         :type config: dict
         :returns: imgur url if upload successful, else None
-        :rtype: str
+        :rtype: str, NoneType
         """
         path_png = 'temp.png'
         path_jpg = 'temp.jpg'
@@ -164,9 +167,6 @@ class TitleToImageBot:
             '[Image with added title]({image_url})\n\n'
             '---\n\n'
             '^summon ^me ^with ^/u/titletoimagebot ^| '
-            '^[remove](https://reddit.com/message/compose/'
-            '?to=TitleToImageBot&subject=remove&message={comment_id}) '
-            '^\\(for ^OP\\) ^| '
             '^[feedback](https://reddit.com/message/compose/'
             '?to=TitleToImageBot&subject=feedback%20{submission_id}) ^| '
             '^[source](https://github.com/gerenook/titletoimagebot/'
@@ -188,14 +188,13 @@ class TitleToImageBot:
         logging.debug('Creating reply')
         reply = self._template.format(
             image_url=url,
-            comment_id='{comment_id}',
             submission_id=submission.id
         )
         try:
             if source_comment:
-                comment = source_comment.reply(reply)
+                source_comment.reply(reply)
             else:
-                comment = submission.reply(reply)
+                submission.reply(reply)
         except praw.exceptions.APIException as error:
             logging.error('Reddit api error, setting retry flag in database | %s', error)
             self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission.id,))
@@ -206,8 +205,6 @@ class TitleToImageBot:
         except Exception as error:
             logging.error('Cannot reply, skipping submission | %s', error)
             return False
-        logging.debug('Editing comment with remove link')
-        comment.edit(reply.format(comment_id=comment.id))
         self._sql.execute('UPDATE submissions SET retry=0 WHERE id=?', (submission.id,))
         self._sql_connection.commit()
         return True
@@ -313,30 +310,6 @@ class TitleToImageBot:
             return
         logging.info('Successfully processed submission')
 
-    def _process_remove_message(self, message):
-        """Remove comment referenced in message body
-
-        :param message: the remove message
-        :type message: praw.models.Message
-        """
-        comment_id = message.body
-        logging.info('Found new remove message id:%s', comment_id)
-        logging.debug('Trying to remove comment')
-        try:
-            comment = self._reddit.comment(comment_id)
-            submission_author = comment.submission.author.name
-            message_author = message.author.name
-            if (message_author == submission_author or
-                    message_author == __author__):
-                comment.delete()
-                logging.info('Successfully deleted comment')
-            else:
-                logging.info('Authors don\'t match, comment not removed')
-        except Exception as error:
-            logging.error('Cannot remove comment | %s', error)
-        finally:
-            message.mark_read()
-
     def _process_feedback_message(self, message):
         """Forward message to creator
 
@@ -382,21 +355,20 @@ class TitleToImageBot:
         if subject == 'username mention' and isinstance(message, praw.models.Comment):
             self._process_submission(message.submission, message)
             message.mark_read()
-        elif subject == 'remove':
-            self._process_remove_message(message)
         elif subject.startswith('feedback'):
             self._process_feedback_message(message)
+        # mark good/bad bot comments as read to keep inbox clean
         elif 'good bot' in body and len(body) < 12:
-            logging.info('Good bot message or comment reply found, marking as read')
+            logging.debug('Good bot message or comment reply found, marking as read')
             message.mark_read()
         elif 'bad bot' in body and len(body) < 12:
-            logging.info('Bad bot message or comment reply found, marking as read')
+            logging.debug('Bad bot message or comment reply found, marking as read')
             message.mark_read()
 
     def run(self, limit):
         """Run the bot
 
-        Process submissions and messages
+        Process submissions and messages, remove bad comments
 
         :param limit: amount of submissions/messages to process
         :type limit: int
@@ -404,9 +376,14 @@ class TitleToImageBot:
         logging.debug('Processing last %s submissions...', limit)
         for submission in self._subreddit.hot(limit=limit):
             self._process_submission(submission)
-        logging.debug('Processing last %s messages, comment replies or username mentions...', limit)
+        logging.debug('Processing last %s messages...', limit)
         for message in self._reddit.inbox.all(limit=limit):
             self._process_message(message)
+        logging.debug('Removing bad comments...')
+        for comment in self._reddit.user.me().comments.new(limit=100):
+            if comment.score <= -1:
+                logging.info('Removing bad comment id:%s score:%s', comment.id, comment.score)
+                comment.delete()
 
 
 def _setup_logging(level):
