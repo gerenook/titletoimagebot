@@ -69,11 +69,11 @@ class RedditImage:
                     delimiter = character
             # end of line
             if character == delimiter:
-                # wrap title if a line is too long
-                if self._font_title.getsize(lines[-1])[0] + RedditImage.margin > self._width:
-                    return self._wrap_title(title)
-                # add new line
                 lines.append('')
+        # if a line is too long, wrap title instead
+        for line in lines:
+            if self._font_title.getsize(line)[0] + RedditImage.margin > self._width:
+                return self._wrap_title(title)
         # remove empty lines (if delimiter is last character)
         return [line for line in lines if line]
 
@@ -402,7 +402,6 @@ class TitleToImageBot:
         subject = 'TitleToImageBot feedback from {}'.format(message_author)
         body = 'Subject: {}\n\nBody: {}'.format(message.subject, message.body)
         self._reddit.redditor(__author__).message(subject, body)
-        message.mark_read()
         logging.info('Forwarded message to author')
 
     def _process_message(self, message):
