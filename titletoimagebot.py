@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.6.4'
+__version__ = '0.7'
 __author__ = 'gerenook'
 
 import argparse
@@ -12,10 +12,12 @@ import re
 import sqlite3
 import sys
 import time
+from colorsys import rgb_to_hls
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
 from os import remove
 
+import apidata
 import praw
 import requests
 from imgurpython import ImgurClient
@@ -23,8 +25,6 @@ from imgurpython.helpers.error import (ImgurClientError,
                                        ImgurClientRateLimitError)
 from PIL import Image, ImageDraw, ImageFont
 from prawcore.exceptions import RequestException, ResponseException
-
-import apidata
 
 
 class RedditImage:
@@ -98,7 +98,7 @@ class RedditImage:
         # remove empty lines
         return [line for line in lines if line]
 
-    def add_title(self, title, boot):
+    def add_title(self, title, boot, bg_color='#fff', text_color='#000'):
         """Add title to new whitespace on image
 
         :param title: the title to add
@@ -111,12 +111,12 @@ class RedditImage:
         line_height = self._font_title.getsize(title)[1] + RedditImage.margin
         lines = self._split_title(title) if boot else self._wrap_title(title)
         whitespace_height = (line_height * len(lines)) + RedditImage.margin
-        new = Image.new('RGB', (self._width, self._height + whitespace_height), '#fff')
+        new = Image.new('RGB', (self._width, self._height + whitespace_height), bg_color)
         new.paste(self._image, (0, whitespace_height))
         draw = ImageDraw.Draw(new)
         for i, line in enumerate(lines):
             draw.text((RedditImage.margin, i * line_height + RedditImage.margin),
-                      line, '#000', self._font_title)
+                      line, text_color, self._font_title)
         self._width, self._height = new.size
         self._image = new
 
@@ -261,11 +261,12 @@ class TitleToImageBot:
         self._template = (
             '[Image with added title]({image_url})\n\n'
             '---\n\n'
-            '^summon ^me ^with ^/u/titletoimagebot ^| '
-            '^[feedback](https://reddit.com/message/compose/'
-            '?to=TitleToImageBot&subject=feedback%20{submission_id}) ^| '
-            '^[source](https://github.com/gerenook/titletoimagebot/'
-            'blob/master/titletoimagebot.py)'
+            'summon me with /u/titletoimagebot | '
+            '[feedback](https://reddit.com/message/compose/'
+            '?to=TitleToImageBot&subject=feedback%20{submission_id}) | '
+            '[source](https://github.com/gerenook/titletoimagebot/'
+            'blob/master/titletoimagebot.py)\n\n'
+            '**NEW** custom title! usage: /u/titletoimagebot "your title here"'
         )
 
     def _reply_imgur_url(self, url, submission, source_comment):
@@ -300,7 +301,7 @@ class TitleToImageBot:
         self._db.submission_clear_retry(submission.id)
         return True
 
-    def _process_submission(self, submission, source_comment=None):
+    def _process_submission(self, submission, source_comment=None, custom_title=None):
         """Generate new image with added title and author, upload to imgur, reply to submission
 
         :param submission: the reddit submission object
@@ -308,6 +309,8 @@ class TitleToImageBot:
         :param source_comment: the comment that mentioned the bot, reply to this comment.
             If None, reply at top level. (default None)
         :type source_comment: praw.models.Comment, NoneType
+        :param custom_title: if not None, use as title instead of submission title
+        :type custom_title: str
         """
         # TODO really need to clean this method up
         # return if author account is deleted
@@ -329,10 +332,11 @@ class TitleToImageBot:
         if result:
             if result['retry'] or source_comment:
                 if result['imgur_url']:
-                    logging.info('Submission id:%s found in database with imgur url set, ' +
-                                 'trying to create reply', submission.id)
-                    self._reply_imgur_url(result['imgur_url'], submission, source_comment)
-                    return
+                    # logging.info('Submission id:%s found in database with imgur url set, ' +
+                    #              'trying to create reply', submission.id)
+                    # self._reply_imgur_url(result['imgur_url'], submission, source_comment)
+                    # return
+                    pass # db check disabled to allow custom titles
                 else:
                     logging.info('Submission id:%s found in database without imgur url set, ',
                                  submission.id)
@@ -368,8 +372,11 @@ class TitleToImageBot:
                 logging.error('Converting to image failed, skipping submission | %s', error)
                 return
         image = RedditImage(img)
-        logging.debug('Adding title and author')
-        image.add_title(title, boot)
+        logging.debug('Adding title')
+        if custom_title:
+            image.add_title(custom_title, boot)
+        else:
+            image.add_title(title, boot)
         logging.debug('Trying to upload new image')
         imgur_config = {
             'album': None,
@@ -427,9 +434,15 @@ class TitleToImageBot:
             logging.debug('Message was sent, returning')
             return
         # process message
-        if subject == 'username mention' and isinstance(message, praw.models.Comment):
-            self._process_submission(message.submission, message)
-            message.mark_read()
+        if isinstance(message, praw.models.Comment):
+            if (subject == 'username mention' or
+                    (subject == 'comment reply' and '/u/titletoimagebot' in body)):
+                match = re.match(r'/u/titletoimagebot\s*"(.+)"', body)
+                title = None
+                if match:
+                    title = match.group(1)
+                self._process_submission(message.submission, message, title)
+                message.mark_read()
         elif subject.startswith('feedback'):
             self._process_feedback_message(message)
         # mark good/bad bot comments as read to keep inbox clean
@@ -507,7 +520,7 @@ def main():
     with open('subreddits.json') as subreddits_file:
         sub = '+'.join(json.load(subreddits_file))
     bot = TitleToImageBot(sub)
-    logging.info('Bot initialized')
+    logging.info(f'Bot initialized, processing the last {args.limit} submissions/messages every {args.interval} seconds')
     while True:
         try:
             logging.debug('Running bot')
