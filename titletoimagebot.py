@@ -441,6 +441,8 @@ class TitleToImageBot:
                 title = None
                 if match:
                     title = match.group(1)
+                    if len(title) > 512:
+                        title = None
                 self._process_submission(message.submission, message, title)
                 message.mark_read()
         elif subject.startswith('feedback'):
