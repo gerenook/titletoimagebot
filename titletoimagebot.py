@@ -336,6 +336,8 @@ class TitleToImageBot:
                     #              'trying to create reply', submission.id)
                     # self._reply_imgur_url(result['imgur_url'], submission, source_comment)
                     # return
+                    logging.info('Submission id:%s found in database with imgur url set',
+                                 submission.id)
                     pass # db check disabled to allow custom titles
                 else:
                     logging.info('Submission id:%s found in database without imgur url set, ',
@@ -422,6 +424,7 @@ class TitleToImageBot:
         # check db if message was already processed
         author = message.author.name
         subject = message.subject.lower()
+        body_original = message.body
         body = message.body.lower()
         if self._db.message_exists(message.id):
             logging.debug('Message %s found in database, returning', message.id)
@@ -434,17 +437,19 @@ class TitleToImageBot:
             logging.debug('Message was sent, returning')
             return
         # process message
-        if isinstance(message, praw.models.Comment):
-            if (subject == 'username mention' or
-                    (subject == 'comment reply' and '/u/titletoimagebot' in body)):
-                match = re.match(r'/u/titletoimagebot\s*"(.+)"', body)
-                title = None
-                if match:
-                    title = match.group(1)
-                    if len(title) > 512:
-                        title = None
-                self._process_submission(message.submission, message, title)
-                message.mark_read()
+        if (isinstance(message, praw.models.Comment) and
+                (subject == 'username mention' or
+                (subject == 'comment reply' and 'u/titletoimagebot' in body))):
+            match = re.match(r'u/titletoimagebot\s*["“”](.+)["“”]', body_original, re.RegexFlag.IGNORECASE)
+            title = None
+            if match:
+                title = match.group(1)
+                if len(title) > 512:
+                    title = None
+                else:
+                    logging.debug('Found custom title: %s', title)
+            self._process_submission(message.submission, message, title)
+            message.mark_read()
         elif subject.startswith('feedback'):
             self._process_feedback_message(message)
         # mark good/bad bot comments as read to keep inbox clean
