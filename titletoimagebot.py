@@ -440,7 +440,7 @@ class TitleToImageBot:
         if (isinstance(message, praw.models.Comment) and
                 (subject == 'username mention' or
                 (subject == 'comment reply' and 'u/titletoimagebot' in body))):
-            match = re.match(r'u/titletoimagebot\s*["“”](.+)["“”]', body_original, re.RegexFlag.IGNORECASE)
+            match = re.match(r'.*u/titletoimagebot\s*["“”](.+)["“”].*', body_original, re.RegexFlag.IGNORECASE)
             title = None
             if match:
                 title = match.group(1)
