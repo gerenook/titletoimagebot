@@ -2,7 +2,7 @@
 
 """meh"""
 
-__version__ = '0.7'
+__version__ = '0.7.1'
 __author__ = 'gerenook'
 
 import argparse
@@ -12,12 +12,11 @@ import re
 import sqlite3
 import sys
 import time
-from colorsys import rgb_to_hls
 from io import BytesIO
 from logging.handlers import TimedRotatingFileHandler
+from math import ceil
 from os import remove
 
-import apidata
 import praw
 import requests
 from imgurpython import ImgurClient
@@ -25,6 +24,8 @@ from imgurpython.helpers.error import (ImgurClientError,
                                        ImgurClientRateLimitError)
 from PIL import Image, ImageDraw, ImageFont
 from prawcore.exceptions import RequestException, ResponseException
+
+import apidata
 
 
 class RedditImage:
@@ -34,16 +35,32 @@ class RedditImage:
     :type image: PIL.Image.Image
     """
     margin = 10
+    min_size = 500
     font_file = 'seguiemj.ttf'
-    font_scale_factor = 20
+    font_scale_factor = 16
     regex_resolution = re.compile(r'\s?\[[0-9]+\s?[xX*×]\s?[0-9]+\]')
 
     def __init__(self, image):
         self._image = image
-        self._width, self._height = image.size
+        self.upscaled = False
+        width, height = image.size
+        # upscale small images
+        if image.size < (self.min_size, self.min_size):
+            if width < height:
+                factor = self.min_size / width
+                self._image = self._image.resize((ceil(width * factor),
+                                                  ceil(height * factor)),
+                                                 Image.LANCZOS)
+            else:
+                factor = self.min_size / height
+                self._image = self._image.resize((ceil(width * factor),
+                                                  ceil(height * factor)),
+                                                 Image.LANCZOS)
+            self.upscaled = True
+        self._width, self._height = self._image.size
         self._font_title = ImageFont.truetype(
-            RedditImage.font_file,
-            self._width // RedditImage.font_scale_factor
+            self.font_file,
+            self._width // self.font_scale_factor
         )
 
     def _split_title(self, title):
@@ -52,7 +69,7 @@ class RedditImage:
         :param title: the title to split
         :type title: str
         :returns: split title
-        :rtype: list
+        :rtype: list[str]
         """
         lines = ['']
         all_delimiters = [',', ';', '.']
@@ -143,8 +160,6 @@ class RedditImage:
             except ImgurClientError as error:
                 logging.error('jpg upload failed, returning | %s', error)
                 return None
-        except ImgurClientRateLimitError:
-            raise
         finally:
             remove(path_png)
             remove(path_jpg)
@@ -208,21 +223,21 @@ class Database:
                           (submission_id, author, title, url))
         self._sql_conn.commit()
 
-    def submission_set_retry(self, submission_id, delete_message=False, message_id=None):
+    def submission_set_retry(self, submission_id, delete_message=False, message=None):
         """Set retry flag for given submission, delete message from db if desired
 
         :param submission_id: the submission id to set retry
         :type submission_id: str
         :param delete_message: if True, delete message from messages table
         :type delete_message: bool
-        :param message_id: the message id to delete
-        :type message_id: str
+        :param message: the message to delete
+        :type message: praw.models.Comment, NoneType
         """
         self._sql.execute('UPDATE submissions SET retry=1 WHERE id=?', (submission_id,))
         if delete_message:
-            if not message_id:
-                raise TypeError('If delete_message is True, message_id must be set')
-            self._sql.execute('DELETE FROM messages WHERE id=?', (message_id,))
+            if not message:
+                raise TypeError('If delete_message is True, message must be set')
+            self._sql.execute('DELETE FROM messages WHERE id=?', (message.id,))
         self._sql_conn.commit()
 
     def submission_clear_retry(self, submission_id):
@@ -260,16 +275,14 @@ class TitleToImageBot:
         self._imgur = ImgurClient(**apidata.imgur)
         self._template = (
             '[Image with added title]({image_url})\n\n'
-            '---\n\n'
+            '{upscaled}---\n\n'
             'summon me with /u/titletoimagebot | '
             '[feedback](https://reddit.com/message/compose/'
             '?to=TitleToImageBot&subject=feedback%20{submission_id}) | '
-            '[source](https://github.com/gerenook/titletoimagebot/'
-            'blob/master/titletoimagebot.py)\n\n'
-            '**NEW** custom title! usage: /u/titletoimagebot "your title here"'
+            '[source](https://github.com/gerenook/titletoimagebot)'
         )
 
-    def _reply_imgur_url(self, url, submission, source_comment):
+    def _reply_imgur_url(self, url, submission, source_comment, upscaled=False):
         """doc todo
 
         :param url: -
@@ -284,6 +297,7 @@ class TitleToImageBot:
         logging.debug('Creating reply')
         reply = self._template.format(
             image_url=url,
+            upscaled=' (image was upscaled)\n\n' if upscaled else '',
             submission_id=submission.id
         )
         try:
@@ -293,7 +307,7 @@ class TitleToImageBot:
                 submission.reply(reply)
         except praw.exceptions.APIException as error:
             logging.error('Reddit api error, setting retry flag in database | %s', error)
-            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment.id)
+            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment)
             return False
         except Exception as error:
             logging.error('Cannot reply, skipping submission | %s', error)
@@ -338,7 +352,7 @@ class TitleToImageBot:
                     # return
                     logging.info('Submission id:%s found in database with imgur url set',
                                  submission.id)
-                    pass # db check disabled to allow custom titles
+                    # db check disabled to allow custom titles
                 else:
                     logging.info('Submission id:%s found in database without imgur url set, ',
                                  submission.id)
@@ -390,7 +404,7 @@ class TitleToImageBot:
             imgur_url = image.upload(self._imgur, imgur_config)
         except ImgurClientRateLimitError as rate_error:
             logging.error('Imgur ratelimit error, setting retry flag in database | %s', rate_error)
-            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment.id)
+            self._db.submission_set_retry(submission.id, bool(source_comment), source_comment)
             return
         if not imgur_url:
             logging.error('Cannot upload new image, skipping submission')
@@ -439,8 +453,9 @@ class TitleToImageBot:
         # process message
         if (isinstance(message, praw.models.Comment) and
                 (subject == 'username mention' or
-                (subject == 'comment reply' and 'u/titletoimagebot' in body))):
-            match = re.match(r'.*u/titletoimagebot\s*["“”](.+)["“”].*', body_original, re.RegexFlag.IGNORECASE)
+                 (subject == 'comment reply' and 'u/titletoimagebot' in body))):
+            match = re.match(r'.*u/titletoimagebot\s*["“”](.+)["“”].*',
+                             body_original, re.RegexFlag.IGNORECASE)
             title = None
             if match:
                 title = match.group(1)
@@ -452,7 +467,7 @@ class TitleToImageBot:
             message.mark_read()
         elif subject.startswith('feedback'):
             self._process_feedback_message(message)
-        # mark good/bad bot comments as read to keep inbox clean
+        # mark short good/bad bot comments as read to keep inbox clean
         elif 'good bot' in body and len(body) < 12:
             logging.debug('Good bot message or comment reply found, marking as read')
             message.mark_read()
@@ -501,6 +516,7 @@ def _setup_logging(level):
                         level=level,
                         handlers=[console_handler, file_handler])
 
+
 def _handle_exception(exc_type, exc_value, exc_traceback):
     """Log unhandled exceptions (see https://stackoverflow.com/a/16993115)"""
     # Don't log ctrl+c
@@ -508,6 +524,7 @@ def _handle_exception(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     logging.critical('Unhandled exception:\n', exc_info=(exc_type, exc_value, exc_traceback))
+
 
 def main():
     """Main function
@@ -527,7 +544,8 @@ def main():
     with open('subreddits.json') as subreddits_file:
         sub = '+'.join(json.load(subreddits_file))
     bot = TitleToImageBot(sub)
-    logging.info(f'Bot initialized, processing the last {args.limit} submissions/messages every {args.interval} seconds')
+    logging.info('Bot initialized, processing the last %s submissions/messages every %s seconds',
+                 args.limit, args.interval)
     while True:
         try:
             logging.debug('Running bot')
@@ -540,6 +558,7 @@ def main():
             logging.error('Reddit api timed out, restarting')
             continue
         time.sleep(args.interval)
+
 
 if __name__ == '__main__':
     main()
