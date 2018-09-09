@@ -48,14 +48,11 @@ class RedditImage:
         if image.size < (self.min_size, self.min_size):
             if width < height:
                 factor = self.min_size / width
-                self._image = self._image.resize((ceil(width * factor),
-                                                  ceil(height * factor)),
-                                                 Image.LANCZOS)
             else:
                 factor = self.min_size / height
-                self._image = self._image.resize((ceil(width * factor),
-                                                  ceil(height * factor)),
-                                                 Image.LANCZOS)
+            self._image = self._image.resize((ceil(width * factor),
+                                              ceil(height * factor)),
+                                             Image.LANCZOS)
             self.upscaled = True
         self._width, self._height = self._image.size
         self._font_title = ImageFont.truetype(
