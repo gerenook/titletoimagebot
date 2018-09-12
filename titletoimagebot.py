@@ -407,7 +407,7 @@ class TitleToImageBot:
             logging.error('Cannot upload new image, skipping submission')
             return
         self._db.submission_set_imgur_url(submission.id, imgur_url)
-        if not self._reply_imgur_url(imgur_url, submission, source_comment):
+        if not self._reply_imgur_url(imgur_url, submission, source_comment, upscaled=image.upscaled):
             return
         logging.info('Successfully processed submission')
 
