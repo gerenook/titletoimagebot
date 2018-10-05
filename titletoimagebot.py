@@ -36,7 +36,9 @@ class RedditImage:
     """
     margin = 10
     min_size = 500
-    font_file = 'seguiemj.ttf'
+    # TODO find a font for all unicode chars & emojis
+    # font_file = 'seguiemj.ttf'
+    font_file = 'roboto.ttf'
     font_scale_factor = 16
     regex_resolution = re.compile(r'\s?\[[0-9]+\s?[xX*×]\s?[0-9]+\]')
 

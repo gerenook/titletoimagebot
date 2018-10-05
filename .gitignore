@@ -2,5 +2,5 @@ __pycache__/
 log/
 database.db
 apidata.py
-seguiemj.ttf
+*.ttf
 test*
