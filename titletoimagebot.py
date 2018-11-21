@@ -453,6 +453,10 @@ class TitleToImageBot:
         if (isinstance(message, praw.models.Comment) and
                 (subject == 'username mention' or
                  (subject == 'comment reply' and 'u/titletoimagebot' in body))):
+            # You win this time, AutoModerator
+            if message.author.name.lower() == 'automoderator':
+                message.mark_read()
+                return
             match = re.match(r'.*u/titletoimagebot\s*["“”](.+)["“”].*',
                              body_original, re.RegexFlag.IGNORECASE)
             title = None
